@@ -1,0 +1,32 @@
+import { Injectable } from '@nestjs/common';
+import { InjectConnection } from '@nestjs/mongoose';
+import type { Connection } from 'mongoose';
+
+@Injectable()
+export class HealthService {
+  constructor(
+    @InjectConnection()
+    private readonly connection: Connection,
+  ) {}
+
+  getHealth() {
+    const databaseStates: Record<number, string> = {
+      0: 'disconnected',
+      1: 'connected',
+      2: 'connecting',
+      3: 'disconnecting',
+    };
+
+    const databaseStatus =
+      databaseStates[this.connection.readyState] ?? 'unknown';
+
+    return {
+      status: databaseStatus === 'connected' ? 'ok' : 'error',
+      timestamp: new Date().toISOString(),
+      uptimeSeconds: Math.floor(process.uptime()),
+      database: {
+        status: databaseStatus,
+      },
+    };
+  }
+}

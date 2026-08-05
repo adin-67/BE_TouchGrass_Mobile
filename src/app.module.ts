@@ -5,6 +5,8 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { HealthModule } from './health/health.module';
+import { UsersModule } from './users/users.module';
+import { AuthModule } from './auth/auth.module';
 import * as Joi from 'joi';
 
 @Module({
@@ -17,6 +19,9 @@ import * as Joi from 'joi';
         MONGODB_URI: Joi.string()
           .pattern(/^mongodb(\+srv)?:\/\//)
           .required(),
+
+        JWT_ACCESS_SECRET: Joi.string().required(),
+        JWT_ACCESS_EXPIRES_IN: Joi.string().required(),
       }),
 
       validationOptions: {
@@ -31,6 +36,8 @@ import * as Joi from 'joi';
       }),
     }),
     HealthModule,
+    UsersModule,
+    AuthModule,
   ],
 
   controllers: [AppController],

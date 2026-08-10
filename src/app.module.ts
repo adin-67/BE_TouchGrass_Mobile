@@ -7,6 +7,7 @@ import { AppService } from './app.service';
 import { HealthModule } from './health/health.module';
 import { UsersModule } from './users/users.module';
 import { AuthModule } from './auth/auth.module';
+import { TasksModule } from './tasks/tasks.module';
 import * as Joi from 'joi';
 
 @Module({
@@ -38,6 +39,7 @@ import * as Joi from 'joi';
     HealthModule,
     UsersModule,
     AuthModule,
+    TasksModule,
   ],
 
   controllers: [AppController],

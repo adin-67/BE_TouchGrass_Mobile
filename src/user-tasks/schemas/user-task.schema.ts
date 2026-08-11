@@ -14,6 +14,13 @@ export enum UserTaskStatus {
   EXPIRED = 'EXPIRED',
 }
 
+export enum UserTaskVerificationStatus {
+  NOT_STARTED = 'NOT_STARTED',
+  IN_PROGRESS = 'IN_PROGRESS',
+  PASSED = 'PASSED',
+  FAILED = 'FAILED',
+}
+
 @Schema({
   timestamps: true,
   versionKey: false,
@@ -78,6 +85,69 @@ export class UserTask {
     default: false,
   })
   rewardGranted!: boolean;
+
+  @Prop({
+    type: String,
+    enum: UserTaskVerificationStatus,
+    default: UserTaskVerificationStatus.NOT_STARTED,
+    index: true,
+  })
+  verificationStatus!: UserTaskVerificationStatus;
+
+  @Prop({
+    default: 0,
+    min: 0,
+  })
+  verificationAttempts!: number;
+
+  @Prop({
+    type: Date,
+    default: null,
+  })
+  verifiedAt!: Date | null;
+
+  @Prop({
+    type: Date,
+    default: null,
+  })
+  trackingStartedAt!: Date | null;
+
+  @Prop({
+    type: Date,
+    default: null,
+  })
+  trackingEndedAt!: Date | null;
+
+  @Prop({
+    default: 0,
+    min: 0,
+  })
+  distanceMeters!: number;
+
+  @Prop({
+    default: 0,
+    min: 0,
+  })
+  durationSeconds!: number;
+
+  @Prop({
+    default: 0,
+    min: 0,
+  })
+  averageSpeedKmh!: number;
+
+  @Prop({
+    default: 0,
+    min: 0,
+  })
+  gpsSampleCount!: number;
+
+  @Prop({
+    type: String,
+    default: null,
+    maxlength: 200,
+  })
+  verificationFailureReason!: string | null;
 }
 
 export const UserTaskSchema = SchemaFactory.createForClass(UserTask);

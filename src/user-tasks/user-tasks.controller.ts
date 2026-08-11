@@ -24,6 +24,7 @@ import type { AuthenticatedRequest } from '../auth/interfaces/authenticated-requ
 import { StartUserTaskDto } from './dto/start-user-task.dto';
 import { UserTasksService } from './user-tasks.service';
 import { UpdateUserTaskProgressDto } from './dto/update-user-task-progress.dto';
+import { FinishGpsTrackingDto } from './dto/finish-gps-tracking.dto';
 @ApiTags('user-tasks')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
@@ -99,6 +100,44 @@ export class UserTasksController {
     );
   }
 
+  @Post(':id/gps/start')
+  @ApiOperation({
+    summary: 'Bắt đầu phiên xác minh GPS',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'ID của UserTask sử dụng GPS',
+  })
+  async startMyGpsTracking(
+    @Req() request: AuthenticatedRequest,
+    @Param('id') userTaskId: string,
+  ) {
+    return await this.userTasksService.startGpsTracking(
+      request.user.sub,
+      userTaskId,
+    );
+  }
+
+  @Post(':id/gps/finish')
+  @ApiOperation({
+    summary: 'Gửi điểm GPS và kết thúc xác minh',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'ID của UserTask đang theo dõi GPS',
+  })
+  async finishMyGpsTracking(
+    @Req() request: AuthenticatedRequest,
+    @Param('id') userTaskId: string,
+    @Body() finishDto: FinishGpsTrackingDto,
+  ) {
+    return await this.userTasksService.finishGpsTracking(
+      request.user.sub,
+      userTaskId,
+      finishDto,
+    );
+  }
+
   @Post(':id/claim-reward')
   @ApiOperation({
     summary: 'Nhận phần thưởng nhiệm vụ',
@@ -141,6 +180,8 @@ export class UserTasksController {
       completedAt: userTask.completedAt,
       expiresAt: userTask.expiresAt,
       rewardGranted: userTask.rewardGranted,
+      verificationStatus: userTask.verificationStatus,
+      verificationAttempts: userTask.verificationAttempts,
     };
   }
 }

@@ -10,15 +10,28 @@ import { isValidObjectId, Types } from 'mongoose';
 import type { Model } from 'mongoose';
 import { ListUserTasksQueryDto } from './dto/list-user-tasks-query.dto';
 import { UpdateUserTaskProgressDto } from './dto/update-user-task-progress.dto';
-import { TaskFrequency } from '../tasks/schemas/task.schema';
+import {
+  TaskFrequency,
+  TaskVerificationType,
+} from '../tasks/schemas/task.schema';
 import { TasksService } from '../tasks/tasks.service';
 import { UsersService } from '../users/users.service';
+import {
+  FinishGpsTrackingDto,
+  type GpsPointDto,
+} from './dto/finish-gps-tracking.dto';
 import { StartUserTaskDto } from './dto/start-user-task.dto';
 import {
   UserTask,
   UserTaskStatus,
+  UserTaskVerificationStatus,
   type UserTaskDocument,
 } from './schemas/user-task.schema';
+
+const MAX_ACCEPTABLE_GPS_ACCURACY_METERS = 50;
+const MAX_WALKING_SPEED_KMH = 15;
+const MAX_TRACKING_DURATION_SECONDS = 4 * 60 * 60;
+const GPS_CLOCK_TOLERANCE_MS = 2 * 60 * 1000;
 
 @Injectable()
 export class UserTasksService {
@@ -162,6 +175,12 @@ export class UserTasksService {
       existingUserTask.task.toString(),
     );
 
+    if (task.verificationType === TaskVerificationType.GPS_DISTANCE) {
+      throw new ConflictException(
+        'GPS progress must be updated through GPS verification',
+      );
+    }
+
     const safeProgress = Math.min(updateDto.progress, task.targetValue);
 
     const updatedUserTask = await this.userTaskModel
@@ -242,6 +261,15 @@ export class UserTasksService {
       throw new ConflictException('Only an in-progress task can be completed');
     }
 
+    if (
+      task.verificationType === TaskVerificationType.GPS_DISTANCE &&
+      currentUserTask.verificationStatus !== UserTaskVerificationStatus.PASSED
+    ) {
+      throw new ConflictException(
+        'GPS task must pass verification before completion',
+      );
+    }
+
     if (currentUserTask.progress < task.targetValue) {
       throw new BadRequestException('Task target has not been reached');
     }
@@ -274,6 +302,222 @@ export class UserTasksService {
     }
 
     return createResponse(completedUserTask);
+  }
+
+  async startGpsTracking(userId: string, userTaskId: string) {
+    if (!isValidObjectId(userTaskId)) {
+      throw new BadRequestException('Invalid user task id');
+    }
+
+    const userObjectId = new Types.ObjectId(userId);
+    const currentUserTask = await this.userTaskModel
+      .findOne({
+        _id: userTaskId,
+        user: userObjectId,
+      })
+      .exec();
+
+    if (!currentUserTask) {
+      throw new NotFoundException('User task not found');
+    }
+
+    if (currentUserTask.status !== UserTaskStatus.IN_PROGRESS) {
+      throw new ConflictException(
+        'Only an in-progress task can start GPS tracking',
+      );
+    }
+
+    const task = await this.tasksService.findById(
+      currentUserTask.task.toString(),
+    );
+
+    if (task.verificationType !== TaskVerificationType.GPS_DISTANCE) {
+      throw new BadRequestException('Task does not use GPS verification');
+    }
+
+    if (
+      currentUserTask.verificationStatus === UserTaskVerificationStatus.PASSED
+    ) {
+      return this.createGpsResponse(currentUserTask, task.targetValue, true);
+    }
+
+    if (
+      currentUserTask.verificationStatus ===
+        UserTaskVerificationStatus.IN_PROGRESS &&
+      currentUserTask.trackingStartedAt
+    ) {
+      return this.createGpsResponse(currentUserTask, task.targetValue, true);
+    }
+
+    const trackingStartedAt = new Date();
+    const startedUserTask = await this.userTaskModel
+      .findOneAndUpdate(
+        {
+          _id: userTaskId,
+          user: userObjectId,
+          status: UserTaskStatus.IN_PROGRESS,
+          $or: [
+            { verificationStatus: { $exists: false } },
+            {
+              verificationStatus: UserTaskVerificationStatus.NOT_STARTED,
+            },
+            { verificationStatus: UserTaskVerificationStatus.FAILED },
+          ],
+        },
+        {
+          $set: {
+            verificationStatus: UserTaskVerificationStatus.IN_PROGRESS,
+            trackingStartedAt,
+            trackingEndedAt: null,
+            verifiedAt: null,
+            distanceMeters: 0,
+            durationSeconds: 0,
+            averageSpeedKmh: 0,
+            gpsSampleCount: 0,
+            verificationFailureReason: null,
+          },
+          $inc: {
+            verificationAttempts: 1,
+          },
+        },
+        {
+          new: true,
+          runValidators: true,
+        },
+      )
+      .exec();
+
+    if (!startedUserTask) {
+      const latestUserTask = await this.userTaskModel
+        .findOne({
+          _id: userTaskId,
+          user: userObjectId,
+        })
+        .exec();
+
+      if (
+        latestUserTask?.verificationStatus ===
+        UserTaskVerificationStatus.IN_PROGRESS
+      ) {
+        return this.createGpsResponse(latestUserTask, task.targetValue, true);
+      }
+
+      throw new ConflictException('Could not start GPS tracking');
+    }
+
+    return this.createGpsResponse(startedUserTask, task.targetValue, false);
+  }
+
+  async finishGpsTracking(
+    userId: string,
+    userTaskId: string,
+    finishDto: FinishGpsTrackingDto,
+  ) {
+    if (!isValidObjectId(userTaskId)) {
+      throw new BadRequestException('Invalid user task id');
+    }
+
+    const userObjectId = new Types.ObjectId(userId);
+    const currentUserTask = await this.userTaskModel
+      .findOne({
+        _id: userTaskId,
+        user: userObjectId,
+      })
+      .exec();
+
+    if (!currentUserTask) {
+      throw new NotFoundException('User task not found');
+    }
+
+    const task = await this.tasksService.findById(
+      currentUserTask.task.toString(),
+    );
+
+    if (task.verificationType !== TaskVerificationType.GPS_DISTANCE) {
+      throw new BadRequestException('Task does not use GPS verification');
+    }
+
+    if (
+      currentUserTask.verificationStatus === UserTaskVerificationStatus.PASSED
+    ) {
+      return this.createGpsResponse(currentUserTask, task.targetValue, true);
+    }
+
+    if (
+      currentUserTask.status !== UserTaskStatus.IN_PROGRESS ||
+      currentUserTask.verificationStatus !==
+        UserTaskVerificationStatus.IN_PROGRESS ||
+      !currentUserTask.trackingStartedAt
+    ) {
+      throw new ConflictException('GPS tracking has not been started');
+    }
+
+    const summary = this.calculateGpsSummary(
+      finishDto.points,
+      currentUserTask.trackingStartedAt,
+    );
+    const safeProgress = Math.min(summary.distanceMeters, task.targetValue);
+    const passed =
+      !summary.hasUnrealisticSpeed &&
+      summary.distanceMeters >= task.targetValue;
+    const failureReason = summary.hasUnrealisticSpeed
+      ? 'UNREALISTIC_SPEED'
+      : passed
+        ? null
+        : 'TARGET_NOT_REACHED';
+
+    const finishedUserTask = await this.userTaskModel
+      .findOneAndUpdate(
+        {
+          _id: userTaskId,
+          user: userObjectId,
+          status: UserTaskStatus.IN_PROGRESS,
+          verificationStatus: UserTaskVerificationStatus.IN_PROGRESS,
+        },
+        {
+          $set: {
+            verificationStatus: passed
+              ? UserTaskVerificationStatus.PASSED
+              : UserTaskVerificationStatus.FAILED,
+            progress: summary.hasUnrealisticSpeed
+              ? currentUserTask.progress
+              : Math.max(currentUserTask.progress, safeProgress),
+            verifiedAt: passed ? new Date() : null,
+            trackingEndedAt: summary.endedAt,
+            distanceMeters: summary.distanceMeters,
+            durationSeconds: summary.durationSeconds,
+            averageSpeedKmh: summary.averageSpeedKmh,
+            gpsSampleCount: summary.sampleCount,
+            verificationFailureReason: failureReason,
+          },
+        },
+        {
+          new: true,
+          runValidators: true,
+        },
+      )
+      .exec();
+
+    if (!finishedUserTask) {
+      const latestUserTask = await this.userTaskModel
+        .findOne({
+          _id: userTaskId,
+          user: userObjectId,
+        })
+        .exec();
+
+      if (
+        latestUserTask &&
+        latestUserTask.verificationStatus !==
+          UserTaskVerificationStatus.IN_PROGRESS
+      ) {
+        return this.createGpsResponse(latestUserTask, task.targetValue, true);
+      }
+
+      throw new ConflictException('GPS tracking state changed while finishing');
+    }
+
+    return this.createGpsResponse(finishedUserTask, task.targetValue, false);
   }
 
   async claimReward(userId: string, userTaskId: string) {
@@ -414,6 +658,151 @@ export class UserTasksService {
     }
 
     return 'ANYTIME';
+  }
+
+  private createGpsResponse(
+    userTask: UserTaskDocument,
+    targetValue: number,
+    alreadyProcessed: boolean,
+  ) {
+    return {
+      userTaskId: userTask._id.toString(),
+      verificationStatus: userTask.verificationStatus,
+      passed: userTask.verificationStatus === UserTaskVerificationStatus.PASSED,
+      progress: userTask.progress,
+      targetValue,
+      trackingStartedAt: userTask.trackingStartedAt,
+      trackingEndedAt: userTask.trackingEndedAt,
+      summary: {
+        distanceMeters: userTask.distanceMeters,
+        durationSeconds: userTask.durationSeconds,
+        averageSpeedKmh: userTask.averageSpeedKmh,
+        sampleCount: userTask.gpsSampleCount,
+      },
+      failureReason: userTask.verificationFailureReason,
+      alreadyProcessed,
+    };
+  }
+
+  private calculateGpsSummary(points: GpsPointDto[], trackingStartedAt: Date) {
+    const accuratePoints = points.filter(
+      (point) => point.accuracy <= MAX_ACCEPTABLE_GPS_ACCURACY_METERS,
+    );
+
+    if (accuratePoints.length < 2) {
+      throw new BadRequestException(
+        'At least two accurate GPS points are required',
+      );
+    }
+
+    const timedPoints = accuratePoints.map((point) => ({
+      ...point,
+      time: new Date(point.timestamp).getTime(),
+    }));
+
+    for (let index = 1; index < timedPoints.length; index += 1) {
+      if (timedPoints[index].time <= timedPoints[index - 1].time) {
+        throw new BadRequestException(
+          'GPS point timestamps must be strictly increasing',
+        );
+      }
+    }
+
+    const firstTime = timedPoints[0].time;
+    const lastTime = timedPoints[timedPoints.length - 1].time;
+    const now = Date.now();
+    const serverTrackingDurationSeconds = Math.floor(
+      (now - trackingStartedAt.getTime()) / 1000,
+    );
+
+    if (
+      firstTime < trackingStartedAt.getTime() - GPS_CLOCK_TOLERANCE_MS ||
+      lastTime > now + GPS_CLOCK_TOLERANCE_MS
+    ) {
+      throw new BadRequestException(
+        'GPS point timestamps are outside the tracking session',
+      );
+    }
+
+    const durationSeconds = Math.floor((lastTime - firstTime) / 1000);
+
+    if (
+      durationSeconds <= 0 ||
+      durationSeconds > MAX_TRACKING_DURATION_SECONDS ||
+      serverTrackingDurationSeconds > MAX_TRACKING_DURATION_SECONDS
+    ) {
+      throw new BadRequestException('Invalid GPS tracking duration');
+    }
+
+    let distanceMeters = 0;
+    let hasUnrealisticSpeed = false;
+
+    for (let index = 1; index < timedPoints.length; index += 1) {
+      const previousPoint = timedPoints[index - 1];
+      const currentPoint = timedPoints[index];
+      const segmentDistance = this.calculateHaversineDistance(
+        previousPoint.latitude,
+        previousPoint.longitude,
+        currentPoint.latitude,
+        currentPoint.longitude,
+      );
+      const accuracyNoise = Math.max(
+        previousPoint.accuracy,
+        currentPoint.accuracy,
+      );
+      const minimumMovementMeters = Math.max(2, accuracyNoise * 0.15);
+
+      if (segmentDistance <= minimumMovementMeters) {
+        continue;
+      }
+
+      const segmentSeconds = (currentPoint.time - previousPoint.time) / 1000;
+      const segmentSpeedKmh = (segmentDistance / segmentSeconds) * 3.6;
+
+      if (segmentSpeedKmh > MAX_WALKING_SPEED_KMH) {
+        hasUnrealisticSpeed = true;
+      }
+
+      distanceMeters += segmentDistance;
+    }
+
+    const roundedDistance = Math.round(distanceMeters * 100) / 100;
+    const averageSpeedKmh =
+      Math.round((roundedDistance / durationSeconds) * 3.6 * 100) / 100;
+
+    return {
+      distanceMeters: roundedDistance,
+      durationSeconds,
+      averageSpeedKmh,
+      sampleCount: accuratePoints.length,
+      hasUnrealisticSpeed,
+      endedAt: new Date(lastTime),
+    };
+  }
+
+  private calculateHaversineDistance(
+    latitude1: number,
+    longitude1: number,
+    latitude2: number,
+    longitude2: number,
+  ): number {
+    const earthRadiusMeters = 6_371_000;
+    const toRadians = (degrees: number) => (degrees * Math.PI) / 180;
+    const latitudeDelta = toRadians(latitude2 - latitude1);
+    const longitudeDelta = toRadians(longitude2 - longitude1);
+    const firstLatitude = toRadians(latitude1);
+    const secondLatitude = toRadians(latitude2);
+    const haversine =
+      Math.sin(latitudeDelta / 2) ** 2 +
+      Math.cos(firstLatitude) *
+        Math.cos(secondLatitude) *
+        Math.sin(longitudeDelta / 2) ** 2;
+
+    return (
+      2 *
+      earthRadiusMeters *
+      Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine))
+    );
   }
 
   private getVietnamDateKey(): string {

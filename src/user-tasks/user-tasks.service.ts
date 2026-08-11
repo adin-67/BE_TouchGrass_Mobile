@@ -6,6 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
+import { createHash } from 'node:crypto';
 import { isValidObjectId, Types } from 'mongoose';
 import type { Model } from 'mongoose';
 import { ListUserTasksQueryDto } from './dto/list-user-tasks-query.dto';
@@ -21,6 +22,7 @@ import {
   type GpsPointDto,
 } from './dto/finish-gps-tracking.dto';
 import { StartUserTaskDto } from './dto/start-user-task.dto';
+import { SubmitPhotoVerificationDto } from './dto/submit-photo-verification.dto';
 import {
   UserTask,
   UserTaskStatus,
@@ -32,6 +34,10 @@ const MAX_ACCEPTABLE_GPS_ACCURACY_METERS = 50;
 const MAX_WALKING_SPEED_KMH = 15;
 const MAX_TRACKING_DURATION_SECONDS = 4 * 60 * 60;
 const GPS_CLOCK_TOLERANCE_MS = 2 * 60 * 1000;
+const MAX_PHOTO_SIZE_BYTES = 5 * 1024 * 1024;
+const MIN_PHOTO_SIZE_BYTES = 1024;
+const PHOTO_CAPTURE_MAX_AGE_MS = 5 * 60 * 1000;
+const PHOTO_CLOCK_TOLERANCE_MS = 2 * 60 * 1000;
 
 @Injectable()
 export class UserTasksService {
@@ -175,9 +181,12 @@ export class UserTasksService {
       existingUserTask.task.toString(),
     );
 
-    if (task.verificationType === TaskVerificationType.GPS_DISTANCE) {
+    if (
+      task.verificationType === TaskVerificationType.GPS_DISTANCE ||
+      task.verificationType === TaskVerificationType.PHOTO_AI
+    ) {
       throw new ConflictException(
-        'GPS progress must be updated through GPS verification',
+        'Verified task progress cannot be updated manually',
       );
     }
 
@@ -267,6 +276,15 @@ export class UserTasksService {
     ) {
       throw new ConflictException(
         'GPS task must pass verification before completion',
+      );
+    }
+
+    if (
+      task.verificationType === TaskVerificationType.PHOTO_AI &&
+      currentUserTask.verificationStatus !== UserTaskVerificationStatus.PASSED
+    ) {
+      throw new ConflictException(
+        'Photo task must pass verification before completion',
       );
     }
 
@@ -520,6 +538,290 @@ export class UserTasksService {
     return this.createGpsResponse(finishedUserTask, task.targetValue, false);
   }
 
+  async verifyPhoto(
+    userId: string,
+    userTaskId: string,
+    submitDto: SubmitPhotoVerificationDto,
+    image: Express.Multer.File | undefined,
+  ) {
+    if (!isValidObjectId(userTaskId)) {
+      throw new BadRequestException('Invalid user task id');
+    }
+
+    if (!image) {
+      throw new BadRequestException('Image file is required');
+    }
+
+    if (
+      image.size < MIN_PHOTO_SIZE_BYTES ||
+      image.size > MAX_PHOTO_SIZE_BYTES
+    ) {
+      throw new BadRequestException('Image size must be between 1 KB and 5 MB');
+    }
+
+    const detectedMimeType = this.detectImageMimeType(image.buffer);
+
+    if (!detectedMimeType) {
+      throw new BadRequestException(
+        'Only JPEG, PNG, or WebP images are allowed',
+      );
+    }
+
+    const capturedAt = new Date(submitDto.capturedAt);
+    const now = new Date();
+
+    if (
+      capturedAt.getTime() > now.getTime() + PHOTO_CLOCK_TOLERANCE_MS ||
+      now.getTime() - capturedAt.getTime() > PHOTO_CAPTURE_MAX_AGE_MS
+    ) {
+      throw new BadRequestException(
+        'Photo must be captured within the last 5 minutes',
+      );
+    }
+
+    const userObjectId = new Types.ObjectId(userId);
+    const currentUserTask = await this.userTaskModel
+      .findOne({
+        _id: userTaskId,
+        user: userObjectId,
+      })
+      .select('+submittedPhotoHashes')
+      .exec();
+
+    if (!currentUserTask) {
+      throw new NotFoundException('User task not found');
+    }
+
+    if (currentUserTask.status !== UserTaskStatus.IN_PROGRESS) {
+      throw new ConflictException(
+        'Only an in-progress task can verify a photo',
+      );
+    }
+
+    const task = await this.tasksService.findById(
+      currentUserTask.task.toString(),
+    );
+
+    if (task.verificationType !== TaskVerificationType.PHOTO_AI) {
+      throw new BadRequestException('Task does not use photo verification');
+    }
+
+    if (
+      currentUserTask.verificationStatus === UserTaskVerificationStatus.PASSED
+    ) {
+      return this.createPhotoResponse(
+        currentUserTask,
+        task.targetValue,
+        true,
+        true,
+      );
+    }
+
+    if (
+      capturedAt.getTime() <
+      currentUserTask.startedAt.getTime() - PHOTO_CLOCK_TOLERANCE_MS
+    ) {
+      throw new BadRequestException(
+        'Photo was captured before the task was started',
+      );
+    }
+
+    const photoHash = createHash('sha256').update(image.buffer).digest('hex');
+    const submittedHashes = currentUserTask.submittedPhotoHashes ?? [];
+
+    if (submittedHashes.includes(photoHash)) {
+      return this.createPhotoResponse(
+        currentUserTask,
+        task.targetValue,
+        false,
+        true,
+      );
+    }
+
+    const reusedPhoto = await this.userTaskModel
+      .findOne({
+        user: userObjectId,
+        _id: { $ne: currentUserTask._id },
+        submittedPhotoHashes: photoHash,
+      })
+      .select('_id')
+      .lean()
+      .exec();
+
+    if (reusedPhoto) {
+      throw new ConflictException(
+        'This photo has already been submitted for another task',
+      );
+    }
+
+    const acceptedLabels = (task.verificationLabels ?? []).map((label) =>
+      label.trim().toLowerCase(),
+    );
+
+    if (acceptedLabels.length === 0) {
+      throw new InternalServerErrorException(
+        'Photo verification labels are not configured for this task',
+      );
+    }
+
+    const highestLabel = submitDto.labels.reduce((best, label) =>
+      label.confidence > best.confidence ? label : best,
+    );
+    const matchingLabels = submitDto.labels.filter((label) =>
+      acceptedLabels.includes(label.text.trim().toLowerCase()),
+    );
+    const matchedLabel = matchingLabels.reduce<
+      SubmitPhotoVerificationDto['labels'][number] | null
+    >(
+      (best, label) =>
+        !best || label.confidence > best.confidence ? label : best,
+      null,
+    );
+    const minimumConfidence = task.verificationMinConfidence ?? 0.7;
+    const photoAccepted =
+      matchedLabel !== null && matchedLabel.confidence >= minimumConfidence;
+    const failureReason = !matchedLabel
+      ? 'LABEL_NOT_ACCEPTED'
+      : photoAccepted
+        ? null
+        : 'LOW_CONFIDENCE';
+    const resultLabel = matchedLabel ?? highestLabel;
+
+    if (!photoAccepted) {
+      const rejectedUserTask = await this.userTaskModel
+        .findOneAndUpdate(
+          {
+            _id: userTaskId,
+            user: userObjectId,
+            status: UserTaskStatus.IN_PROGRESS,
+            submittedPhotoHashes: { $ne: photoHash },
+          },
+          {
+            $set: {
+              verificationStatus: UserTaskVerificationStatus.FAILED,
+              verifiedAt: null,
+              verificationFailureReason: failureReason,
+              lastPhotoLabel: resultLabel.text.trim(),
+              lastPhotoConfidence: resultLabel.confidence,
+              lastPhotoCapturedAt: capturedAt,
+              lastPhotoMimeType: detectedMimeType,
+              lastPhotoSizeBytes: image.size,
+            },
+            $inc: {
+              verificationAttempts: 1,
+            },
+            $addToSet: {
+              submittedPhotoHashes: photoHash,
+            },
+          },
+          {
+            new: true,
+            runValidators: true,
+          },
+        )
+        .select('+submittedPhotoHashes')
+        .exec();
+
+      if (!rejectedUserTask) {
+        const latestUserTask = await this.userTaskModel
+          .findOne({ _id: userTaskId, user: userObjectId })
+          .select('+submittedPhotoHashes')
+          .exec();
+
+        if (latestUserTask?.submittedPhotoHashes.includes(photoHash)) {
+          return this.createPhotoResponse(
+            latestUserTask,
+            task.targetValue,
+            false,
+            true,
+          );
+        }
+
+        throw new ConflictException(
+          'Photo verification state changed while processing',
+        );
+      }
+
+      return this.createPhotoResponse(
+        rejectedUserTask,
+        task.targetValue,
+        false,
+        false,
+      );
+    }
+
+    const newProgress = Math.min(
+      currentUserTask.progress + 1,
+      task.targetValue,
+    );
+    const taskPassed = newProgress >= task.targetValue;
+    const verifiedAt = taskPassed ? now : null;
+    const verifiedUserTask = await this.userTaskModel
+      .findOneAndUpdate(
+        {
+          _id: userTaskId,
+          user: userObjectId,
+          status: UserTaskStatus.IN_PROGRESS,
+          progress: currentUserTask.progress,
+          submittedPhotoHashes: { $ne: photoHash },
+        },
+        {
+          $set: {
+            progress: newProgress,
+            verificationStatus: taskPassed
+              ? UserTaskVerificationStatus.PASSED
+              : UserTaskVerificationStatus.IN_PROGRESS,
+            verifiedAt,
+            verificationFailureReason: null,
+            lastPhotoLabel: matchedLabel.text.trim(),
+            lastPhotoConfidence: matchedLabel.confidence,
+            lastPhotoCapturedAt: capturedAt,
+            lastPhotoMimeType: detectedMimeType,
+            lastPhotoSizeBytes: image.size,
+          },
+          $inc: {
+            verificationAttempts: 1,
+          },
+          $addToSet: {
+            submittedPhotoHashes: photoHash,
+          },
+        },
+        {
+          new: true,
+          runValidators: true,
+        },
+      )
+      .select('+submittedPhotoHashes')
+      .exec();
+
+    if (!verifiedUserTask) {
+      const latestUserTask = await this.userTaskModel
+        .findOne({ _id: userTaskId, user: userObjectId })
+        .select('+submittedPhotoHashes')
+        .exec();
+
+      if (latestUserTask?.submittedPhotoHashes.includes(photoHash)) {
+        return this.createPhotoResponse(
+          latestUserTask,
+          task.targetValue,
+          true,
+          true,
+        );
+      }
+
+      throw new ConflictException(
+        'Photo verification state changed while processing',
+      );
+    }
+
+    return this.createPhotoResponse(
+      verifiedUserTask,
+      task.targetValue,
+      true,
+      false,
+    );
+  }
+
   async claimReward(userId: string, userTaskId: string) {
     if (!isValidObjectId(userTaskId)) {
       throw new BadRequestException('Invalid user task id');
@@ -658,6 +960,63 @@ export class UserTasksService {
     }
 
     return 'ANYTIME';
+  }
+
+  private createPhotoResponse(
+    userTask: UserTaskDocument,
+    targetValue: number,
+    photoAccepted: boolean,
+    alreadyProcessed: boolean,
+  ) {
+    return {
+      userTaskId: userTask._id.toString(),
+      verificationStatus: userTask.verificationStatus,
+      passed: userTask.verificationStatus === UserTaskVerificationStatus.PASSED,
+      photoAccepted,
+      progress: userTask.progress,
+      targetValue,
+      acceptedPhotoCount: userTask.progress,
+      requiredPhotoCount: targetValue,
+      result: {
+        label: userTask.lastPhotoLabel,
+        confidence: userTask.lastPhotoConfidence,
+        capturedAt: userTask.lastPhotoCapturedAt,
+      },
+      failureReason: userTask.verificationFailureReason,
+      alreadyProcessed,
+    };
+  }
+
+  private detectImageMimeType(buffer: Buffer): string | null {
+    if (
+      buffer.length >= 3 &&
+      buffer[0] === 0xff &&
+      buffer[1] === 0xd8 &&
+      buffer[2] === 0xff
+    ) {
+      return 'image/jpeg';
+    }
+
+    const pngSignature = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    ]);
+
+    if (
+      buffer.length >= pngSignature.length &&
+      buffer.subarray(0, pngSignature.length).equals(pngSignature)
+    ) {
+      return 'image/png';
+    }
+
+    if (
+      buffer.length >= 12 &&
+      buffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
+      buffer.subarray(8, 12).toString('ascii') === 'WEBP'
+    ) {
+      return 'image/webp';
+    }
+
+    return null;
   }
 
   private createGpsResponse(

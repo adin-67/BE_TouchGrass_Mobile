@@ -88,6 +88,14 @@ export class Task {
   verificationLabels?: string[];
 
   @Prop({
+    type: Number,
+    min: 0,
+    max: 1,
+    default: 0.7,
+  })
+  verificationMinConfidence?: number;
+
+  @Prop({
     type: String,
     enum: TaskFrequency,
     required: true,

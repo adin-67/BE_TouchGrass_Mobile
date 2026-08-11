@@ -148,6 +148,48 @@ export class UserTask {
     maxlength: 200,
   })
   verificationFailureReason!: string | null;
+
+  @Prop({
+    type: [String],
+    default: [],
+    select: false,
+  })
+  submittedPhotoHashes!: string[];
+
+  @Prop({
+    type: String,
+    default: null,
+    maxlength: 100,
+  })
+  lastPhotoLabel!: string | null;
+
+  @Prop({
+    type: Number,
+    default: null,
+    min: 0,
+    max: 1,
+  })
+  lastPhotoConfidence!: number | null;
+
+  @Prop({
+    type: Date,
+    default: null,
+  })
+  lastPhotoCapturedAt!: Date | null;
+
+  @Prop({
+    type: String,
+    default: null,
+    enum: ['image/jpeg', 'image/png', 'image/webp'],
+  })
+  lastPhotoMimeType!: string | null;
+
+  @Prop({
+    type: Number,
+    default: 0,
+    min: 0,
+  })
+  lastPhotoSizeBytes!: number;
 }
 
 export const UserTaskSchema = SchemaFactory.createForClass(UserTask);

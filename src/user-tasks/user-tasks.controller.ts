@@ -7,8 +7,12 @@ import {
   Post,
   Query,
   Req,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
 
 import { ListUserTasksQueryDto } from './dto/list-user-tasks-query.dto';
 
@@ -17,6 +21,8 @@ import {
   ApiOperation,
   ApiTags,
   ApiParam,
+  ApiBody,
+  ApiConsumes,
 } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -25,6 +31,7 @@ import { StartUserTaskDto } from './dto/start-user-task.dto';
 import { UserTasksService } from './user-tasks.service';
 import { UpdateUserTaskProgressDto } from './dto/update-user-task-progress.dto';
 import { FinishGpsTrackingDto } from './dto/finish-gps-tracking.dto';
+import { SubmitPhotoVerificationDto } from './dto/submit-photo-verification.dto';
 @ApiTags('user-tasks')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
@@ -135,6 +142,61 @@ export class UserTasksController {
       request.user.sub,
       userTaskId,
       finishDto,
+    );
+  }
+
+  @Post(':id/photo/verify')
+  @ApiOperation({
+    summary: 'Gửi ảnh chụp trực tiếp và kết quả nhận diện từ ML Kit',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'ID của UserTask sử dụng xác minh ảnh',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['image', 'labels', 'capturedAt'],
+      properties: {
+        image: {
+          type: 'string',
+          format: 'binary',
+          description: 'Ảnh vừa được chụp trực tiếp từ camera',
+        },
+        labels: {
+          type: 'string',
+          example: '[{"text":"Plant","confidence":0.91}]',
+          description: 'Danh sách nhãn ML Kit được JSON.stringify',
+        },
+        capturedAt: {
+          type: 'string',
+          format: 'date-time',
+          example: '2026-08-11T10:30:00.000Z',
+        },
+      },
+    },
+  })
+  @UseInterceptors(
+    FileInterceptor('image', {
+      storage: memoryStorage(),
+      limits: {
+        files: 1,
+        fileSize: 5 * 1024 * 1024,
+      },
+    }),
+  )
+  async verifyMyTaskPhoto(
+    @Req() request: AuthenticatedRequest,
+    @Param('id') userTaskId: string,
+    @Body() submitDto: SubmitPhotoVerificationDto,
+    @UploadedFile() image: Express.Multer.File | undefined,
+  ) {
+    return await this.userTasksService.verifyPhoto(
+      request.user.sub,
+      userTaskId,
+      submitDto,
+      image,
     );
   }
 

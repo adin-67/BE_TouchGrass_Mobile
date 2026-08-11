@@ -8,8 +8,13 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { createHash } from 'node:crypto';
 import { isValidObjectId, Types } from 'mongoose';
-import type { Model } from 'mongoose';
+import type { Model, PipelineStage } from 'mongoose';
 import { ListUserTasksQueryDto } from './dto/list-user-tasks-query.dto';
+import { HistoryFilter, type HistoryQueryDto } from './dto/history-query.dto';
+import {
+  StatisticsPeriod,
+  type StatisticsQueryDto,
+} from './dto/statistics-query.dto';
 import { UpdateUserTaskProgressDto } from './dto/update-user-task-progress.dto';
 import {
   TaskFrequency,
@@ -44,6 +49,52 @@ const SCREEN_TIMER_CLOCK_TOLERANCE_MS = 2 * 60 * 1000;
 const SCREEN_EVENT_REPORT_MAX_AGE_MS = 5 * 60 * 1000;
 const SCREEN_DURATION_TOLERANCE_SECONDS = 10;
 const MAX_MANUAL_CHECKIN_DURATION_SECONDS = 4 * 60 * 60;
+const VIETNAM_UTC_OFFSET_HOURS = 7;
+
+interface HistoryCountResult {
+  _id: HistoryFilter;
+  count: number;
+}
+
+interface HistoryItemResult {
+  id: string;
+  taskId: string;
+  title: string;
+  emoji: string;
+  category: string;
+  verificationType: TaskVerificationType;
+  activityAt: Date;
+  startedAt: Date;
+  completedAt: Date | null;
+  durationSeconds: number;
+  rewardXp: number;
+  rewardLp: number;
+  rewardGranted: boolean;
+  status: HistoryFilter;
+}
+
+interface StatisticsRecord {
+  activityAt: Date;
+  status: UserTaskStatus;
+  verificationStatus: UserTaskVerificationStatus;
+  distanceMeters: number;
+  gpsDurationSeconds: number;
+  screenTimerDurationSeconds: number;
+  manualCheckinDurationSeconds: number;
+  rewardGranted: boolean;
+  task: {
+    verificationType: TaskVerificationType;
+    rewardXp: number;
+    rewardLp: number;
+  };
+}
+
+interface PeriodRange {
+  startAt: Date;
+  endAt: Date;
+  previousStartAt: Date;
+  previousEndAt: Date;
+}
 
 @Injectable()
 export class UserTasksService {
@@ -111,6 +162,258 @@ export class UserTasksService {
         total,
         totalPages: Math.ceil(total / query.limit),
       },
+    };
+  }
+
+  async getHistory(userId: string, query: HistoryQueryDto) {
+    const userObjectId = new Types.ObjectId(userId);
+    const terminalMatch = {
+      user: userObjectId,
+      $or: [
+        { status: UserTaskStatus.COMPLETED },
+        { status: UserTaskStatus.CANCELLED },
+        { status: UserTaskStatus.EXPIRED },
+        { verificationStatus: UserTaskVerificationStatus.FAILED },
+      ],
+    };
+    const historyStatusExpression = {
+      $switch: {
+        branches: [
+          {
+            case: { $eq: ['$status', UserTaskStatus.COMPLETED] },
+            then: HistoryFilter.DONE,
+          },
+          {
+            case: { $eq: ['$status', UserTaskStatus.CANCELLED] },
+            then: HistoryFilter.CANCELLED,
+          },
+        ],
+        default: HistoryFilter.INVALID,
+      },
+    };
+    const skip = (query.page - 1) * query.limit;
+    const itemPipeline: PipelineStage[] = [
+      { $match: terminalMatch },
+      {
+        $addFields: {
+          historyStatus: historyStatusExpression,
+          activityAt: { $ifNull: ['$completedAt', '$updatedAt'] },
+        },
+      },
+    ];
+
+    if (query.filter !== HistoryFilter.ALL) {
+      itemPipeline.push({
+        $match: { historyStatus: query.filter },
+      });
+    }
+
+    itemPipeline.push(
+      { $sort: { activityAt: -1 } },
+      {
+        $facet: {
+          items: [
+            { $skip: skip },
+            { $limit: query.limit },
+            {
+              $lookup: {
+                from: 'tasks',
+                localField: 'task',
+                foreignField: '_id',
+                as: 'taskDetails',
+              },
+            },
+            { $unwind: '$taskDetails' },
+            {
+              $project: {
+                _id: 0,
+                id: { $toString: '$_id' },
+                taskId: { $toString: '$task' },
+                title: '$taskDetails.title',
+                emoji: '$taskDetails.emoji',
+                category: '$taskDetails.category',
+                verificationType: '$taskDetails.verificationType',
+                activityAt: 1,
+                startedAt: 1,
+                completedAt: 1,
+                durationSeconds: {
+                  $switch: {
+                    branches: [
+                      {
+                        case: {
+                          $eq: [
+                            '$taskDetails.verificationType',
+                            TaskVerificationType.GPS_DISTANCE,
+                          ],
+                        },
+                        then: '$durationSeconds',
+                      },
+                      {
+                        case: {
+                          $eq: [
+                            '$taskDetails.verificationType',
+                            TaskVerificationType.SCREEN_OFF_TIMER,
+                          ],
+                        },
+                        then: '$screenTimerDurationSeconds',
+                      },
+                      {
+                        case: {
+                          $eq: [
+                            '$taskDetails.verificationType',
+                            TaskVerificationType.MANUAL_CHECKIN,
+                          ],
+                        },
+                        then: '$manualCheckinDurationSeconds',
+                      },
+                    ],
+                    default: 0,
+                  },
+                },
+                rewardXp: '$taskDetails.rewardXp',
+                rewardLp: '$taskDetails.rewardLp',
+                rewardGranted: 1,
+                status: '$historyStatus',
+              },
+            },
+          ],
+          total: [{ $count: 'value' }],
+        },
+      },
+    );
+
+    const [historyResult, countRows] = await Promise.all([
+      this.userTaskModel
+        .aggregate<{
+          items: HistoryItemResult[];
+          total: Array<{ value: number }>;
+        }>(itemPipeline)
+        .exec(),
+      this.userTaskModel
+        .aggregate<HistoryCountResult>([
+          { $match: terminalMatch },
+          { $addFields: { historyStatus: historyStatusExpression } },
+          { $group: { _id: '$historyStatus', count: { $sum: 1 } } },
+        ])
+        .exec(),
+    ]);
+
+    const result = historyResult[0] ?? { items: [], total: [] };
+    const counts = {
+      all: 0,
+      done: 0,
+      invalid: 0,
+      cancelled: 0,
+    };
+
+    for (const row of countRows) {
+      counts[row._id] = row.count;
+      counts.all += row.count;
+    }
+
+    const total = result.total[0]?.value ?? 0;
+
+    return {
+      items: result.items,
+      counts,
+      pagination: {
+        page: query.page,
+        limit: query.limit,
+        total,
+        totalPages: Math.ceil(total / query.limit),
+      },
+    };
+  }
+
+  async getStatistics(userId: string, query: StatisticsQueryDto) {
+    const range = this.getStatisticsRange(query.period);
+    const records = await this.getStatisticsRecords(
+      new Types.ObjectId(userId),
+      range.previousStartAt,
+      range.endAt,
+    );
+    const currentRecords = records.filter(
+      (record) => record.activityAt >= range.startAt,
+    );
+    const previousRecords = records.filter(
+      (record) => record.activityAt < range.startAt,
+    );
+    const currentSummary = this.summarizeStatistics(currentRecords);
+    const previousSummary = this.summarizeStatistics(previousRecords);
+
+    return {
+      period: query.period,
+      range: {
+        startAt: range.startAt,
+        endAt: range.endAt,
+      },
+      summary: {
+        ...currentSummary,
+        comparison: {
+          completedPercent: this.calculatePercentChange(
+            currentSummary.completed,
+            previousSummary.completed,
+          ),
+          outdoorPercent: this.calculatePercentChange(
+            currentSummary.outdoorSeconds,
+            previousSummary.outdoorSeconds,
+          ),
+        },
+      },
+      series: this.buildStatisticsSeries(
+        currentRecords,
+        query.period,
+        range.startAt,
+        range.endAt,
+      ),
+      deviceMetrics: {
+        available: false,
+        source: 'ANDROID_USAGE_STATS_REQUIRED',
+        screenTimeSeconds: null,
+        topApps: [],
+      },
+    };
+  }
+
+  async getProfileSummary(userId: string) {
+    const userObjectId = new Types.ObjectId(userId);
+    const [completedRecords, historyItems] = await Promise.all([
+      this.getStatisticsRecords(userObjectId),
+      this.userTaskModel
+        .countDocuments({
+          user: userObjectId,
+          $or: [
+            { status: UserTaskStatus.COMPLETED },
+            { status: UserTaskStatus.CANCELLED },
+            { status: UserTaskStatus.EXPIRED },
+            { verificationStatus: UserTaskVerificationStatus.FAILED },
+          ],
+        })
+        .exec(),
+    ]);
+    const completed = completedRecords.filter(
+      (record) => record.status === UserTaskStatus.COMPLETED,
+    );
+    const totalDistanceMeters = completed.reduce(
+      (total, record) => total + record.distanceMeters,
+      0,
+    );
+    const totalOfflineSeconds = completed.reduce(
+      (total, record) =>
+        total +
+        record.screenTimerDurationSeconds +
+        record.manualCheckinDurationSeconds,
+      0,
+    );
+
+    return {
+      completedTasks: completed.length,
+      historyItems,
+      totalDistanceMeters: Math.round(totalDistanceMeters * 100) / 100,
+      totalWalkingKilometers:
+        Math.round((totalDistanceMeters / 1000) * 100) / 100,
+      totalOfflineSeconds,
+      totalOfflineHours: Math.round((totalOfflineSeconds / 3600) * 10) / 10,
     };
   }
 
@@ -1547,6 +1850,261 @@ export class UserTasksService {
     }
 
     return userTask;
+  }
+
+  private async getStatisticsRecords(
+    userId: Types.ObjectId,
+    startAt?: Date,
+    endAt?: Date,
+  ): Promise<StatisticsRecord[]> {
+    const pipeline: PipelineStage[] = [
+      {
+        $match: {
+          user: userId,
+          $or: [
+            { status: UserTaskStatus.COMPLETED },
+            { status: UserTaskStatus.CANCELLED },
+            { status: UserTaskStatus.EXPIRED },
+            { verificationStatus: UserTaskVerificationStatus.FAILED },
+          ],
+        },
+      },
+      {
+        $addFields: {
+          activityAt: { $ifNull: ['$completedAt', '$updatedAt'] },
+        },
+      },
+    ];
+
+    if (startAt && endAt) {
+      pipeline.push({
+        $match: {
+          activityAt: {
+            $gte: startAt,
+            $lt: endAt,
+          },
+        },
+      });
+    }
+
+    pipeline.push(
+      {
+        $lookup: {
+          from: 'tasks',
+          localField: 'task',
+          foreignField: '_id',
+          as: 'taskDetails',
+        },
+      },
+      { $unwind: '$taskDetails' },
+      {
+        $project: {
+          _id: 0,
+          activityAt: 1,
+          status: 1,
+          verificationStatus: 1,
+          distanceMeters: { $ifNull: ['$distanceMeters', 0] },
+          gpsDurationSeconds: { $ifNull: ['$durationSeconds', 0] },
+          screenTimerDurationSeconds: {
+            $ifNull: ['$screenTimerDurationSeconds', 0],
+          },
+          manualCheckinDurationSeconds: {
+            $ifNull: ['$manualCheckinDurationSeconds', 0],
+          },
+          rewardGranted: 1,
+          task: {
+            verificationType: '$taskDetails.verificationType',
+            rewardXp: '$taskDetails.rewardXp',
+            rewardLp: '$taskDetails.rewardLp',
+          },
+        },
+      },
+    );
+
+    return await this.userTaskModel
+      .aggregate<StatisticsRecord>(pipeline)
+      .exec();
+  }
+
+  private summarizeStatistics(records: StatisticsRecord[]) {
+    const summary = {
+      totalTasks: records.length,
+      completed: 0,
+      invalid: 0,
+      cancelled: 0,
+      completionRate: 0,
+      distanceMeters: 0,
+      outdoorSeconds: 0,
+      offlineSeconds: 0,
+      xpEarned: 0,
+      leafPointsEarned: 0,
+    };
+
+    for (const record of records) {
+      const historyStatus = this.getHistoryStatus(record);
+
+      if (historyStatus === HistoryFilter.DONE) {
+        summary.completed += 1;
+        summary.distanceMeters += record.distanceMeters;
+
+        if (
+          record.task.verificationType === TaskVerificationType.GPS_DISTANCE
+        ) {
+          summary.outdoorSeconds += record.gpsDurationSeconds;
+        }
+
+        summary.offlineSeconds +=
+          record.screenTimerDurationSeconds +
+          record.manualCheckinDurationSeconds;
+
+        if (record.rewardGranted) {
+          summary.xpEarned += record.task.rewardXp;
+          summary.leafPointsEarned += record.task.rewardLp;
+        }
+      } else if (historyStatus === HistoryFilter.CANCELLED) {
+        summary.cancelled += 1;
+      } else {
+        summary.invalid += 1;
+      }
+    }
+
+    summary.distanceMeters = Math.round(summary.distanceMeters * 100) / 100;
+    summary.completionRate =
+      summary.totalTasks === 0
+        ? 0
+        : Math.round((summary.completed / summary.totalTasks) * 100);
+
+    return summary;
+  }
+
+  private getHistoryStatus(
+    record: Pick<StatisticsRecord, 'status' | 'verificationStatus'>,
+  ): HistoryFilter {
+    if (record.status === UserTaskStatus.COMPLETED) {
+      return HistoryFilter.DONE;
+    }
+
+    if (record.status === UserTaskStatus.CANCELLED) {
+      return HistoryFilter.CANCELLED;
+    }
+
+    return HistoryFilter.INVALID;
+  }
+
+  private getStatisticsRange(period: StatisticsPeriod): PeriodRange {
+    const localNow = new Date(
+      Date.now() + VIETNAM_UTC_OFFSET_HOURS * 60 * 60 * 1000,
+    );
+    const year = localNow.getUTCFullYear();
+    const month = localNow.getUTCMonth();
+    const day = localNow.getUTCDate();
+    let startLocal: Date;
+    let endLocal: Date;
+    let previousStartLocal: Date;
+
+    if (period === StatisticsPeriod.DAY) {
+      startLocal = new Date(Date.UTC(year, month, day));
+      endLocal = new Date(Date.UTC(year, month, day + 1));
+      previousStartLocal = new Date(Date.UTC(year, month, day - 1));
+    } else if (period === StatisticsPeriod.WEEK) {
+      const todayLocal = new Date(Date.UTC(year, month, day));
+      const daysSinceMonday = (todayLocal.getUTCDay() + 6) % 7;
+      startLocal = new Date(Date.UTC(year, month, day - daysSinceMonday));
+      endLocal = new Date(startLocal);
+      endLocal.setUTCDate(endLocal.getUTCDate() + 7);
+      previousStartLocal = new Date(startLocal);
+      previousStartLocal.setUTCDate(previousStartLocal.getUTCDate() - 7);
+    } else {
+      startLocal = new Date(Date.UTC(year, month, 1));
+      endLocal = new Date(Date.UTC(year, month + 1, 1));
+      previousStartLocal = new Date(Date.UTC(year, month - 1, 1));
+    }
+
+    return {
+      startAt: this.vietnamLocalToUtc(startLocal),
+      endAt: this.vietnamLocalToUtc(endLocal),
+      previousStartAt: this.vietnamLocalToUtc(previousStartLocal),
+      previousEndAt: this.vietnamLocalToUtc(startLocal),
+    };
+  }
+
+  private vietnamLocalToUtc(localDate: Date): Date {
+    return new Date(
+      localDate.getTime() - VIETNAM_UTC_OFFSET_HOURS * 60 * 60 * 1000,
+    );
+  }
+
+  private buildStatisticsSeries(
+    records: StatisticsRecord[],
+    period: StatisticsPeriod,
+    startAt: Date,
+    endAt: Date,
+  ) {
+    const bucketCount =
+      period === StatisticsPeriod.DAY
+        ? 6
+        : period === StatisticsPeriod.WEEK
+          ? 7
+          : Math.ceil(
+              (endAt.getTime() - startAt.getTime()) / (7 * 24 * 60 * 60 * 1000),
+            );
+    const weekdayLabels = ['T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'CN'];
+    const series = Array.from({ length: bucketCount }, (_, index) => ({
+      key: String(index),
+      label:
+        period === StatisticsPeriod.DAY
+          ? `${String(index * 4).padStart(2, '0')}:00`
+          : period === StatisticsPeriod.WEEK
+            ? weekdayLabels[index]
+            : `Tuần ${index + 1}`,
+      completed: 0,
+      invalid: 0,
+      cancelled: 0,
+      outdoorSeconds: 0,
+    }));
+
+    for (const record of records) {
+      const elapsedHours =
+        (record.activityAt.getTime() - startAt.getTime()) / (60 * 60 * 1000);
+      const bucketIndex =
+        period === StatisticsPeriod.DAY
+          ? Math.floor(elapsedHours / 4)
+          : period === StatisticsPeriod.WEEK
+            ? Math.floor(elapsedHours / 24)
+            : Math.floor(elapsedHours / (7 * 24));
+      const bucket = series[bucketIndex];
+
+      if (!bucket) {
+        continue;
+      }
+
+      const historyStatus = this.getHistoryStatus(record);
+
+      if (historyStatus === HistoryFilter.DONE) {
+        bucket.completed += 1;
+      } else if (historyStatus === HistoryFilter.CANCELLED) {
+        bucket.cancelled += 1;
+      } else {
+        bucket.invalid += 1;
+      }
+
+      if (
+        historyStatus === HistoryFilter.DONE &&
+        record.task.verificationType === TaskVerificationType.GPS_DISTANCE
+      ) {
+        bucket.outdoorSeconds += record.gpsDurationSeconds;
+      }
+    }
+
+    return series;
+  }
+
+  private calculatePercentChange(current: number, previous: number) {
+    if (previous === 0) {
+      return current === 0 ? 0 : null;
+    }
+
+    return Math.round(((current - previous) / previous) * 100);
   }
 
   private createCycleKey(frequency: TaskFrequency): string {

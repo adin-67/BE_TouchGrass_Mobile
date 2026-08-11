@@ -33,6 +33,8 @@ import { UpdateUserTaskProgressDto } from './dto/update-user-task-progress.dto';
 import { FinishGpsTrackingDto } from './dto/finish-gps-tracking.dto';
 import { FinishScreenTimerDto } from './dto/finish-screen-timer.dto';
 import { SubmitPhotoVerificationDto } from './dto/submit-photo-verification.dto';
+import { HistoryQueryDto } from './dto/history-query.dto';
+import { StatisticsQueryDto } from './dto/statistics-query.dto';
 @ApiTags('user-tasks')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
@@ -49,6 +51,36 @@ export class UserTasksController {
     @Query() query: ListUserTasksQueryDto,
   ) {
     return await this.userTasksService.findAllForUser(request.user.sub, query);
+  }
+
+  @Get('history')
+  @ApiOperation({
+    summary: 'Lấy lịch sử nhiệm vụ cho màn hình History',
+  })
+  async getMyHistory(
+    @Req() request: AuthenticatedRequest,
+    @Query() query: HistoryQueryDto,
+  ): Promise<unknown> {
+    return await this.userTasksService.getHistory(request.user.sub, query);
+  }
+
+  @Get('statistics')
+  @ApiOperation({
+    summary: 'Lấy thống kê nhiệm vụ theo ngày, tuần hoặc tháng',
+  })
+  async getMyStatistics(
+    @Req() request: AuthenticatedRequest,
+    @Query() query: StatisticsQueryDto,
+  ): Promise<unknown> {
+    return await this.userTasksService.getStatistics(request.user.sub, query);
+  }
+
+  @Get('summary')
+  @ApiOperation({
+    summary: 'Lấy số liệu tổng quan cho hồ sơ người dùng',
+  })
+  async getMySummary(@Req() request: AuthenticatedRequest): Promise<unknown> {
+    return await this.userTasksService.getProfileSummary(request.user.sub);
   }
 
   @Get(':id')

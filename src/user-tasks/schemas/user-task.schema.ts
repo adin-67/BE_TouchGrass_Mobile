@@ -26,6 +26,10 @@ export enum UserTaskVerificationStatus {
   versionKey: false,
 })
 export class UserTask {
+  createdAt!: Date;
+
+  updatedAt!: Date;
+
   @Prop({
     type: Types.ObjectId,
     ref: User.name,
@@ -257,4 +261,15 @@ UserTaskSchema.index({
   user: 1,
   status: 1,
   createdAt: -1,
+});
+
+UserTaskSchema.index({
+  user: 1,
+  completedAt: -1,
+});
+
+UserTaskSchema.index({
+  user: 1,
+  verificationStatus: 1,
+  updatedAt: -1,
 });

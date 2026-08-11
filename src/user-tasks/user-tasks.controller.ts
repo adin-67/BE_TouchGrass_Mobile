@@ -184,6 +184,42 @@ export class UserTasksController {
     );
   }
 
+  @Post(':id/manual-checkin/start')
+  @ApiOperation({
+    summary: 'Bắt đầu phiên nhiệm vụ xác nhận thủ công',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'ID của UserTask sử dụng xác nhận thủ công',
+  })
+  async startMyManualCheckin(
+    @Req() request: AuthenticatedRequest,
+    @Param('id') userTaskId: string,
+  ) {
+    return await this.userTasksService.startManualCheckin(
+      request.user.sub,
+      userTaskId,
+    );
+  }
+
+  @Post(':id/manual-checkin/finish')
+  @ApiOperation({
+    summary: 'Kết thúc và xác minh phiên nhiệm vụ thủ công',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'ID của UserTask đang chạy phiên xác nhận thủ công',
+  })
+  async finishMyManualCheckin(
+    @Req() request: AuthenticatedRequest,
+    @Param('id') userTaskId: string,
+  ) {
+    return await this.userTasksService.finishManualCheckin(
+      request.user.sub,
+      userTaskId,
+    );
+  }
+
   @Post(':id/photo/verify')
   @ApiOperation({
     summary: 'Gửi ảnh chụp trực tiếp và kết quả nhận diện từ ML Kit',

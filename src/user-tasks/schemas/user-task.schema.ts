@@ -161,6 +161,24 @@ export class UserTask {
   screenTimerDurationSeconds!: number;
 
   @Prop({
+    type: Date,
+    default: null,
+  })
+  manualCheckinStartedAt!: Date | null;
+
+  @Prop({
+    type: Date,
+    default: null,
+  })
+  manualCheckinEndedAt!: Date | null;
+
+  @Prop({
+    default: 0,
+    min: 0,
+  })
+  manualCheckinDurationSeconds!: number;
+
+  @Prop({
     default: 0,
     min: 0,
   })

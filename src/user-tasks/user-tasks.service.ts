@@ -43,6 +43,7 @@ const MAX_SCREEN_TIMER_DURATION_SECONDS = 4 * 60 * 60;
 const SCREEN_TIMER_CLOCK_TOLERANCE_MS = 2 * 60 * 1000;
 const SCREEN_EVENT_REPORT_MAX_AGE_MS = 5 * 60 * 1000;
 const SCREEN_DURATION_TOLERANCE_SECONDS = 10;
+const MAX_MANUAL_CHECKIN_DURATION_SECONDS = 4 * 60 * 60;
 
 @Injectable()
 export class UserTasksService {
@@ -189,7 +190,8 @@ export class UserTasksService {
     if (
       task.verificationType === TaskVerificationType.GPS_DISTANCE ||
       task.verificationType === TaskVerificationType.PHOTO_AI ||
-      task.verificationType === TaskVerificationType.SCREEN_OFF_TIMER
+      task.verificationType === TaskVerificationType.SCREEN_OFF_TIMER ||
+      task.verificationType === TaskVerificationType.MANUAL_CHECKIN
     ) {
       throw new ConflictException(
         'Verified task progress cannot be updated manually',
@@ -300,6 +302,15 @@ export class UserTasksService {
     ) {
       throw new ConflictException(
         'Screen timer task must pass verification before completion',
+      );
+    }
+
+    if (
+      task.verificationType === TaskVerificationType.MANUAL_CHECKIN &&
+      currentUserTask.verificationStatus !== UserTaskVerificationStatus.PASSED
+    ) {
+      throw new ConflictException(
+        'Manual check-in task must pass verification before completion',
       );
     }
 
@@ -870,6 +881,265 @@ export class UserTasksService {
     );
   }
 
+  async startManualCheckin(userId: string, userTaskId: string) {
+    if (!isValidObjectId(userTaskId)) {
+      throw new BadRequestException('Invalid user task id');
+    }
+
+    const userObjectId = new Types.ObjectId(userId);
+    const currentUserTask = await this.userTaskModel
+      .findOne({
+        _id: userTaskId,
+        user: userObjectId,
+      })
+      .exec();
+
+    if (!currentUserTask) {
+      throw new NotFoundException('User task not found');
+    }
+
+    if (currentUserTask.status !== UserTaskStatus.IN_PROGRESS) {
+      throw new ConflictException(
+        'Only an in-progress task can start a manual check-in',
+      );
+    }
+
+    const task = await this.tasksService.findById(
+      currentUserTask.task.toString(),
+    );
+
+    if (task.verificationType !== TaskVerificationType.MANUAL_CHECKIN) {
+      throw new BadRequestException(
+        'Task does not use manual check-in verification',
+      );
+    }
+
+    if (
+      currentUserTask.verificationStatus === UserTaskVerificationStatus.PASSED
+    ) {
+      return this.createManualCheckinResponse(
+        currentUserTask,
+        task.targetValue,
+        true,
+      );
+    }
+
+    const now = new Date();
+    const staleBefore = new Date(
+      now.getTime() - MAX_MANUAL_CHECKIN_DURATION_SECONDS * 1000,
+    );
+
+    if (
+      currentUserTask.verificationStatus ===
+        UserTaskVerificationStatus.IN_PROGRESS &&
+      currentUserTask.manualCheckinStartedAt &&
+      currentUserTask.manualCheckinStartedAt > staleBefore
+    ) {
+      return this.createManualCheckinResponse(
+        currentUserTask,
+        task.targetValue,
+        true,
+      );
+    }
+
+    const startedUserTask = await this.userTaskModel
+      .findOneAndUpdate(
+        {
+          _id: userTaskId,
+          user: userObjectId,
+          status: UserTaskStatus.IN_PROGRESS,
+          $or: [
+            { verificationStatus: { $exists: false } },
+            { verificationStatus: UserTaskVerificationStatus.NOT_STARTED },
+            { verificationStatus: UserTaskVerificationStatus.FAILED },
+            {
+              verificationStatus: UserTaskVerificationStatus.IN_PROGRESS,
+              manualCheckinStartedAt: null,
+            },
+            {
+              verificationStatus: UserTaskVerificationStatus.IN_PROGRESS,
+              manualCheckinStartedAt: { $lte: staleBefore },
+            },
+          ],
+        },
+        {
+          $set: {
+            verificationStatus: UserTaskVerificationStatus.IN_PROGRESS,
+            progress: 0,
+            verifiedAt: null,
+            manualCheckinStartedAt: now,
+            manualCheckinEndedAt: null,
+            manualCheckinDurationSeconds: 0,
+            verificationFailureReason: null,
+          },
+          $inc: {
+            verificationAttempts: 1,
+          },
+        },
+        {
+          new: true,
+          runValidators: true,
+        },
+      )
+      .exec();
+
+    if (!startedUserTask) {
+      const latestUserTask = await this.userTaskModel
+        .findOne({
+          _id: userTaskId,
+          user: userObjectId,
+        })
+        .exec();
+
+      if (
+        latestUserTask?.verificationStatus ===
+        UserTaskVerificationStatus.IN_PROGRESS
+      ) {
+        return this.createManualCheckinResponse(
+          latestUserTask,
+          task.targetValue,
+          true,
+        );
+      }
+
+      throw new ConflictException('Could not start manual check-in');
+    }
+
+    return this.createManualCheckinResponse(
+      startedUserTask,
+      task.targetValue,
+      false,
+    );
+  }
+
+  async finishManualCheckin(userId: string, userTaskId: string) {
+    if (!isValidObjectId(userTaskId)) {
+      throw new BadRequestException('Invalid user task id');
+    }
+
+    const userObjectId = new Types.ObjectId(userId);
+    const currentUserTask = await this.userTaskModel
+      .findOne({
+        _id: userTaskId,
+        user: userObjectId,
+      })
+      .exec();
+
+    if (!currentUserTask) {
+      throw new NotFoundException('User task not found');
+    }
+
+    const task = await this.tasksService.findById(
+      currentUserTask.task.toString(),
+    );
+
+    if (task.verificationType !== TaskVerificationType.MANUAL_CHECKIN) {
+      throw new BadRequestException(
+        'Task does not use manual check-in verification',
+      );
+    }
+
+    if (
+      currentUserTask.verificationStatus ===
+        UserTaskVerificationStatus.PASSED ||
+      currentUserTask.verificationStatus === UserTaskVerificationStatus.FAILED
+    ) {
+      return this.createManualCheckinResponse(
+        currentUserTask,
+        task.targetValue,
+        true,
+      );
+    }
+
+    if (
+      currentUserTask.status !== UserTaskStatus.IN_PROGRESS ||
+      currentUserTask.verificationStatus !==
+        UserTaskVerificationStatus.IN_PROGRESS ||
+      !currentUserTask.manualCheckinStartedAt
+    ) {
+      throw new ConflictException('Manual check-in has not been started');
+    }
+
+    const now = new Date();
+    const durationSeconds = Math.floor(
+      (now.getTime() - currentUserTask.manualCheckinStartedAt.getTime()) / 1000,
+    );
+
+    if (
+      durationSeconds < 0 ||
+      durationSeconds > MAX_MANUAL_CHECKIN_DURATION_SECONDS
+    ) {
+      throw new BadRequestException(
+        'Manual check-in duration must be between 0 seconds and 4 hours',
+      );
+    }
+
+    const targetSeconds = task.targetValue * 60;
+    const passed = durationSeconds >= targetSeconds;
+    const progressMinutes = Math.min(
+      Math.round((durationSeconds / 60) * 100) / 100,
+      task.targetValue,
+    );
+    const finishedUserTask = await this.userTaskModel
+      .findOneAndUpdate(
+        {
+          _id: userTaskId,
+          user: userObjectId,
+          status: UserTaskStatus.IN_PROGRESS,
+          verificationStatus: UserTaskVerificationStatus.IN_PROGRESS,
+          manualCheckinStartedAt: currentUserTask.manualCheckinStartedAt,
+        },
+        {
+          $set: {
+            verificationStatus: passed
+              ? UserTaskVerificationStatus.PASSED
+              : UserTaskVerificationStatus.FAILED,
+            progress: progressMinutes,
+            verifiedAt: passed ? now : null,
+            manualCheckinEndedAt: now,
+            manualCheckinDurationSeconds: durationSeconds,
+            verificationFailureReason: passed ? null : 'TARGET_NOT_REACHED',
+          },
+        },
+        {
+          new: true,
+          runValidators: true,
+        },
+      )
+      .exec();
+
+    if (!finishedUserTask) {
+      const latestUserTask = await this.userTaskModel
+        .findOne({
+          _id: userTaskId,
+          user: userObjectId,
+        })
+        .exec();
+
+      if (
+        latestUserTask &&
+        latestUserTask.verificationStatus !==
+          UserTaskVerificationStatus.IN_PROGRESS
+      ) {
+        return this.createManualCheckinResponse(
+          latestUserTask,
+          task.targetValue,
+          true,
+        );
+      }
+
+      throw new ConflictException(
+        'Manual check-in state changed while finishing',
+      );
+    }
+
+    return this.createManualCheckinResponse(
+      finishedUserTask,
+      task.targetValue,
+      false,
+    );
+  }
+
   async verifyPhoto(
     userId: string,
     userTaskId: string,
@@ -1292,6 +1562,26 @@ export class UserTasksService {
     }
 
     return 'ANYTIME';
+  }
+
+  private createManualCheckinResponse(
+    userTask: UserTaskDocument,
+    targetValue: number,
+    alreadyProcessed: boolean,
+  ) {
+    return {
+      userTaskId: userTask._id.toString(),
+      verificationStatus: userTask.verificationStatus,
+      passed: userTask.verificationStatus === UserTaskVerificationStatus.PASSED,
+      progress: userTask.progress,
+      targetValue,
+      targetSeconds: targetValue * 60,
+      checkinStartedAt: userTask.manualCheckinStartedAt,
+      checkinEndedAt: userTask.manualCheckinEndedAt,
+      durationSeconds: userTask.manualCheckinDurationSeconds,
+      failureReason: userTask.verificationFailureReason,
+      alreadyProcessed,
+    };
   }
 
   private createScreenTimerResponse(

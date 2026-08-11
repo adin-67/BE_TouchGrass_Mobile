@@ -1,4 +1,5 @@
 import { Schema, SchemaFactory, Prop } from '@nestjs/mongoose';
+import { Types } from 'mongoose';
 import type { HydratedDocument } from 'mongoose';
 
 export type UserDocument = HydratedDocument<User>;
@@ -75,5 +76,19 @@ export class User {
     default: UserRoles.USER,
   })
   role!: UserRoles;
+
+  @Prop({
+    default: 0,
+    min: 0,
+  })
+  unlockMinutesBalance!: number;
+
+  @Prop({
+    type: [Types.ObjectId],
+    ref: 'UserTask',
+    default: [],
+    select: false,
+  })
+  rewardedUserTasks!: Types.ObjectId[];
 }
 export const UserSchema = SchemaFactory.createForClass(User);

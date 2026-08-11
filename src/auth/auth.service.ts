@@ -48,6 +48,7 @@ export class AuthService {
         xp: createdUser.xp,
         level: createdUser.level,
         leafPoints: createdUser.leafPoints,
+        unlockMinutesBalance: createdUser.unlockMinutesBalance,
         role: createdUser.role,
       },
     };
@@ -87,6 +88,7 @@ export class AuthService {
         xp: user.xp,
         level: user.level,
         leafPoints: user.leafPoints,
+        unlockMinutesBalance: user.unlockMinutesBalance,
         role: user.role,
       },
     };

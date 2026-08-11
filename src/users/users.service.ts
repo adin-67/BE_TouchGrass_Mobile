@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 
 import type { CreateUserData } from './interfaces/create-user-data';
 
@@ -55,6 +55,43 @@ export class UsersService {
       .select('+passwordHash')
       .exec();
     return user;
+  }
+
+  async grantTaskReward(
+    userId: string,
+    userTaskId: string,
+    rewardXp: number,
+    rewardLp: number,
+    unlockMinutes: number,
+  ): Promise<UserDocument | null> {
+    const userTaskObjectId = new Types.ObjectId(userTaskId);
+
+    const rewardedUser = await this.userModel
+      .findOneAndUpdate(
+        {
+          _id: userId,
+          rewardedUserTasks: {
+            $ne: userTaskObjectId,
+          },
+        },
+        {
+          $inc: {
+            xp: rewardXp,
+            leafPoints: rewardLp,
+            unlockMinutesBalance: unlockMinutes,
+          },
+          $addToSet: {
+            rewardedUserTasks: userTaskObjectId,
+          },
+        },
+        {
+          new: true,
+          runValidators: true,
+        },
+      )
+      .exec();
+
+    return rewardedUser;
   }
   async createUser(data: CreateUserData): Promise<UserDocument> {
     const newUser = new this.userModel({

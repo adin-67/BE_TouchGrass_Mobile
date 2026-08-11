@@ -37,6 +37,7 @@ export class UsersController {
       xp: user.xp,
       level: user.level,
       leafPoints: user.leafPoints,
+      unlockMinutesBalance: user.unlockMinutesBalance,
       role: user.role,
     };
   }
@@ -66,6 +67,7 @@ export class UsersController {
       xp: updatedUser.xp,
       level: updatedUser.level,
       leafPoints: updatedUser.leafPoints,
+      unlockMinutesBalance: updatedUser.unlockMinutesBalance,
       role: updatedUser.role,
     };
   }

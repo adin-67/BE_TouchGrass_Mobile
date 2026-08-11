@@ -10,6 +10,10 @@ import { AuthModule } from './auth/auth.module';
 import { TasksModule } from './tasks/tasks.module';
 import * as Joi from 'joi';
 
+import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { UserTasksModule } from './user-tasks/user-tasks.module';
+
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -30,6 +34,13 @@ import * as Joi from 'joi';
         abortEarly: false,
       },
     }),
+    ThrottlerModule.forRoot([
+      {
+        name: 'default',
+        ttl: 60_000,
+        limit: 100,
+      },
+    ]),
     MongooseModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
@@ -40,9 +51,16 @@ import * as Joi from 'joi';
     UsersModule,
     AuthModule,
     TasksModule,
+    UserTasksModule,
   ],
 
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
+  ],
 })
 export class AppModule {}

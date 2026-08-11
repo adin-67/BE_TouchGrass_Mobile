@@ -131,6 +131,36 @@ export class UserTask {
   durationSeconds!: number;
 
   @Prop({
+    type: Date,
+    default: null,
+  })
+  screenTimerStartedAt!: Date | null;
+
+  @Prop({
+    type: Date,
+    default: null,
+  })
+  screenTimerEndedAt!: Date | null;
+
+  @Prop({
+    type: Date,
+    default: null,
+  })
+  screenOffAt!: Date | null;
+
+  @Prop({
+    type: Date,
+    default: null,
+  })
+  screenOnAt!: Date | null;
+
+  @Prop({
+    default: 0,
+    min: 0,
+  })
+  screenTimerDurationSeconds!: number;
+
+  @Prop({
     default: 0,
     min: 0,
   })

@@ -31,6 +31,7 @@ import { StartUserTaskDto } from './dto/start-user-task.dto';
 import { UserTasksService } from './user-tasks.service';
 import { UpdateUserTaskProgressDto } from './dto/update-user-task-progress.dto';
 import { FinishGpsTrackingDto } from './dto/finish-gps-tracking.dto';
+import { FinishScreenTimerDto } from './dto/finish-screen-timer.dto';
 import { SubmitPhotoVerificationDto } from './dto/submit-photo-verification.dto';
 @ApiTags('user-tasks')
 @ApiBearerAuth()
@@ -139,6 +140,44 @@ export class UserTasksController {
     @Body() finishDto: FinishGpsTrackingDto,
   ) {
     return await this.userTasksService.finishGpsTracking(
+      request.user.sub,
+      userTaskId,
+      finishDto,
+    );
+  }
+
+  @Post(':id/screen-timer/start')
+  @ApiOperation({
+    summary: 'Bắt đầu phiên xác minh tắt màn hình',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'ID của UserTask sử dụng bộ đếm tắt màn hình',
+  })
+  async startMyScreenTimer(
+    @Req() request: AuthenticatedRequest,
+    @Param('id') userTaskId: string,
+  ) {
+    return await this.userTasksService.startScreenTimer(
+      request.user.sub,
+      userTaskId,
+    );
+  }
+
+  @Post(':id/screen-timer/finish')
+  @ApiOperation({
+    summary: 'Kết thúc và xác minh phiên tắt màn hình',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'ID của UserTask đang chạy bộ đếm tắt màn hình',
+  })
+  async finishMyScreenTimer(
+    @Req() request: AuthenticatedRequest,
+    @Param('id') userTaskId: string,
+    @Body() finishDto: FinishScreenTimerDto,
+  ) {
+    return await this.userTasksService.finishScreenTimer(
       request.user.sub,
       userTaskId,
       finishDto,

@@ -22,6 +22,7 @@ import {
   type GpsPointDto,
 } from './dto/finish-gps-tracking.dto';
 import { StartUserTaskDto } from './dto/start-user-task.dto';
+import { FinishScreenTimerDto } from './dto/finish-screen-timer.dto';
 import { SubmitPhotoVerificationDto } from './dto/submit-photo-verification.dto';
 import {
   UserTask,
@@ -38,6 +39,10 @@ const MAX_PHOTO_SIZE_BYTES = 5 * 1024 * 1024;
 const MIN_PHOTO_SIZE_BYTES = 1024;
 const PHOTO_CAPTURE_MAX_AGE_MS = 5 * 60 * 1000;
 const PHOTO_CLOCK_TOLERANCE_MS = 2 * 60 * 1000;
+const MAX_SCREEN_TIMER_DURATION_SECONDS = 4 * 60 * 60;
+const SCREEN_TIMER_CLOCK_TOLERANCE_MS = 2 * 60 * 1000;
+const SCREEN_EVENT_REPORT_MAX_AGE_MS = 5 * 60 * 1000;
+const SCREEN_DURATION_TOLERANCE_SECONDS = 10;
 
 @Injectable()
 export class UserTasksService {
@@ -183,7 +188,8 @@ export class UserTasksService {
 
     if (
       task.verificationType === TaskVerificationType.GPS_DISTANCE ||
-      task.verificationType === TaskVerificationType.PHOTO_AI
+      task.verificationType === TaskVerificationType.PHOTO_AI ||
+      task.verificationType === TaskVerificationType.SCREEN_OFF_TIMER
     ) {
       throw new ConflictException(
         'Verified task progress cannot be updated manually',
@@ -285,6 +291,15 @@ export class UserTasksService {
     ) {
       throw new ConflictException(
         'Photo task must pass verification before completion',
+      );
+    }
+
+    if (
+      task.verificationType === TaskVerificationType.SCREEN_OFF_TIMER &&
+      currentUserTask.verificationStatus !== UserTaskVerificationStatus.PASSED
+    ) {
+      throw new ConflictException(
+        'Screen timer task must pass verification before completion',
       );
     }
 
@@ -536,6 +551,323 @@ export class UserTasksService {
     }
 
     return this.createGpsResponse(finishedUserTask, task.targetValue, false);
+  }
+
+  async startScreenTimer(userId: string, userTaskId: string) {
+    if (!isValidObjectId(userTaskId)) {
+      throw new BadRequestException('Invalid user task id');
+    }
+
+    const userObjectId = new Types.ObjectId(userId);
+    const currentUserTask = await this.userTaskModel
+      .findOne({
+        _id: userTaskId,
+        user: userObjectId,
+      })
+      .exec();
+
+    if (!currentUserTask) {
+      throw new NotFoundException('User task not found');
+    }
+
+    if (currentUserTask.status !== UserTaskStatus.IN_PROGRESS) {
+      throw new ConflictException(
+        'Only an in-progress task can start a screen timer',
+      );
+    }
+
+    const task = await this.tasksService.findById(
+      currentUserTask.task.toString(),
+    );
+
+    if (task.verificationType !== TaskVerificationType.SCREEN_OFF_TIMER) {
+      throw new BadRequestException(
+        'Task does not use screen timer verification',
+      );
+    }
+
+    if (
+      currentUserTask.verificationStatus === UserTaskVerificationStatus.PASSED
+    ) {
+      return this.createScreenTimerResponse(
+        currentUserTask,
+        task.targetValue,
+        true,
+      );
+    }
+
+    const now = new Date();
+    const staleBefore = new Date(
+      now.getTime() - MAX_SCREEN_TIMER_DURATION_SECONDS * 1000,
+    );
+
+    if (
+      currentUserTask.verificationStatus ===
+        UserTaskVerificationStatus.IN_PROGRESS &&
+      currentUserTask.screenTimerStartedAt &&
+      currentUserTask.screenTimerStartedAt > staleBefore
+    ) {
+      return this.createScreenTimerResponse(
+        currentUserTask,
+        task.targetValue,
+        true,
+      );
+    }
+
+    const startedUserTask = await this.userTaskModel
+      .findOneAndUpdate(
+        {
+          _id: userTaskId,
+          user: userObjectId,
+          status: UserTaskStatus.IN_PROGRESS,
+          $or: [
+            { verificationStatus: { $exists: false } },
+            { verificationStatus: UserTaskVerificationStatus.NOT_STARTED },
+            { verificationStatus: UserTaskVerificationStatus.FAILED },
+            {
+              verificationStatus: UserTaskVerificationStatus.IN_PROGRESS,
+              screenTimerStartedAt: null,
+            },
+            {
+              verificationStatus: UserTaskVerificationStatus.IN_PROGRESS,
+              screenTimerStartedAt: { $lte: staleBefore },
+            },
+          ],
+        },
+        {
+          $set: {
+            verificationStatus: UserTaskVerificationStatus.IN_PROGRESS,
+            progress: 0,
+            verifiedAt: null,
+            screenTimerStartedAt: now,
+            screenTimerEndedAt: null,
+            screenOffAt: null,
+            screenOnAt: null,
+            screenTimerDurationSeconds: 0,
+            verificationFailureReason: null,
+          },
+          $inc: {
+            verificationAttempts: 1,
+          },
+        },
+        {
+          new: true,
+          runValidators: true,
+        },
+      )
+      .exec();
+
+    if (!startedUserTask) {
+      const latestUserTask = await this.userTaskModel
+        .findOne({
+          _id: userTaskId,
+          user: userObjectId,
+        })
+        .exec();
+
+      if (
+        latestUserTask?.verificationStatus ===
+        UserTaskVerificationStatus.IN_PROGRESS
+      ) {
+        return this.createScreenTimerResponse(
+          latestUserTask,
+          task.targetValue,
+          true,
+        );
+      }
+
+      throw new ConflictException('Could not start screen timer');
+    }
+
+    return this.createScreenTimerResponse(
+      startedUserTask,
+      task.targetValue,
+      false,
+    );
+  }
+
+  async finishScreenTimer(
+    userId: string,
+    userTaskId: string,
+    finishDto: FinishScreenTimerDto,
+  ) {
+    if (!isValidObjectId(userTaskId)) {
+      throw new BadRequestException('Invalid user task id');
+    }
+
+    const userObjectId = new Types.ObjectId(userId);
+    const currentUserTask = await this.userTaskModel
+      .findOne({
+        _id: userTaskId,
+        user: userObjectId,
+      })
+      .exec();
+
+    if (!currentUserTask) {
+      throw new NotFoundException('User task not found');
+    }
+
+    const task = await this.tasksService.findById(
+      currentUserTask.task.toString(),
+    );
+
+    if (task.verificationType !== TaskVerificationType.SCREEN_OFF_TIMER) {
+      throw new BadRequestException(
+        'Task does not use screen timer verification',
+      );
+    }
+
+    if (
+      currentUserTask.verificationStatus === UserTaskVerificationStatus.PASSED
+    ) {
+      return this.createScreenTimerResponse(
+        currentUserTask,
+        task.targetValue,
+        true,
+      );
+    }
+
+    const screenOffAt = new Date(finishDto.screenOffAt);
+    const screenOnAt = new Date(finishDto.screenOnAt);
+
+    if (
+      currentUserTask.verificationStatus ===
+        UserTaskVerificationStatus.FAILED &&
+      currentUserTask.screenOffAt?.getTime() === screenOffAt.getTime() &&
+      currentUserTask.screenOnAt?.getTime() === screenOnAt.getTime()
+    ) {
+      return this.createScreenTimerResponse(
+        currentUserTask,
+        task.targetValue,
+        true,
+      );
+    }
+
+    if (
+      currentUserTask.status !== UserTaskStatus.IN_PROGRESS ||
+      currentUserTask.verificationStatus !==
+        UserTaskVerificationStatus.IN_PROGRESS ||
+      !currentUserTask.screenTimerStartedAt
+    ) {
+      throw new ConflictException('Screen timer has not been started');
+    }
+
+    const now = new Date();
+    const timerStartedAt = currentUserTask.screenTimerStartedAt;
+    const screenOffTime = screenOffAt.getTime();
+    const screenOnTime = screenOnAt.getTime();
+    const nowTime = now.getTime();
+    const timerStartedTime = timerStartedAt.getTime();
+
+    if (screenOnTime <= screenOffTime) {
+      throw new BadRequestException(
+        'Screen-on time must be after screen-off time',
+      );
+    }
+
+    if (
+      screenOffTime < timerStartedTime - SCREEN_TIMER_CLOCK_TOLERANCE_MS ||
+      screenOnTime > nowTime + SCREEN_TIMER_CLOCK_TOLERANCE_MS
+    ) {
+      throw new BadRequestException(
+        'Screen event timestamps are outside the timer session',
+      );
+    }
+
+    if (nowTime - screenOnTime > SCREEN_EVENT_REPORT_MAX_AGE_MS) {
+      throw new BadRequestException(
+        'Screen-on event must be reported within 5 minutes',
+      );
+    }
+
+    const durationSeconds = Math.floor((screenOnTime - screenOffTime) / 1000);
+    const serverElapsedSeconds = Math.floor(
+      (nowTime - timerStartedTime) / 1000,
+    );
+
+    if (
+      durationSeconds <= 0 ||
+      durationSeconds > MAX_SCREEN_TIMER_DURATION_SECONDS ||
+      serverElapsedSeconds > MAX_SCREEN_TIMER_DURATION_SECONDS
+    ) {
+      throw new BadRequestException(
+        'Screen timer duration must be between 1 second and 4 hours',
+      );
+    }
+
+    if (
+      durationSeconds >
+      serverElapsedSeconds + SCREEN_DURATION_TOLERANCE_SECONDS
+    ) {
+      throw new BadRequestException(
+        'Screen-off duration is longer than the server timer',
+      );
+    }
+
+    const targetSeconds = task.targetValue * 60;
+    const passed = durationSeconds >= targetSeconds;
+    const progressMinutes = Math.min(
+      Math.round((durationSeconds / 60) * 100) / 100,
+      task.targetValue,
+    );
+    const finishedUserTask = await this.userTaskModel
+      .findOneAndUpdate(
+        {
+          _id: userTaskId,
+          user: userObjectId,
+          status: UserTaskStatus.IN_PROGRESS,
+          verificationStatus: UserTaskVerificationStatus.IN_PROGRESS,
+          screenTimerStartedAt: timerStartedAt,
+        },
+        {
+          $set: {
+            verificationStatus: passed
+              ? UserTaskVerificationStatus.PASSED
+              : UserTaskVerificationStatus.FAILED,
+            progress: progressMinutes,
+            verifiedAt: passed ? now : null,
+            screenTimerEndedAt: now,
+            screenOffAt,
+            screenOnAt,
+            screenTimerDurationSeconds: durationSeconds,
+            verificationFailureReason: passed ? null : 'TARGET_NOT_REACHED',
+          },
+        },
+        {
+          new: true,
+          runValidators: true,
+        },
+      )
+      .exec();
+
+    if (!finishedUserTask) {
+      const latestUserTask = await this.userTaskModel
+        .findOne({
+          _id: userTaskId,
+          user: userObjectId,
+        })
+        .exec();
+
+      if (
+        latestUserTask &&
+        latestUserTask.verificationStatus !==
+          UserTaskVerificationStatus.IN_PROGRESS
+      ) {
+        return this.createScreenTimerResponse(
+          latestUserTask,
+          task.targetValue,
+          true,
+        );
+      }
+
+      throw new ConflictException('Screen timer state changed while finishing');
+    }
+
+    return this.createScreenTimerResponse(
+      finishedUserTask,
+      task.targetValue,
+      false,
+    );
   }
 
   async verifyPhoto(
@@ -960,6 +1292,28 @@ export class UserTasksService {
     }
 
     return 'ANYTIME';
+  }
+
+  private createScreenTimerResponse(
+    userTask: UserTaskDocument,
+    targetValue: number,
+    alreadyProcessed: boolean,
+  ) {
+    return {
+      userTaskId: userTask._id.toString(),
+      verificationStatus: userTask.verificationStatus,
+      passed: userTask.verificationStatus === UserTaskVerificationStatus.PASSED,
+      progress: userTask.progress,
+      targetValue,
+      targetSeconds: targetValue * 60,
+      timerStartedAt: userTask.screenTimerStartedAt,
+      timerEndedAt: userTask.screenTimerEndedAt,
+      screenOffAt: userTask.screenOffAt,
+      screenOnAt: userTask.screenOnAt,
+      durationSeconds: userTask.screenTimerDurationSeconds,
+      failureReason: userTask.verificationFailureReason,
+      alreadyProcessed,
+    };
   }
 
   private createPhotoResponse(

@@ -13,6 +13,7 @@ import * as Joi from 'joi';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { UserTasksModule } from './user-tasks/user-tasks.module';
+import { AppControlModule } from './app-control/app-control.module';
 
 @Module({
   imports: [
@@ -52,6 +53,7 @@ import { UserTasksModule } from './user-tasks/user-tasks.module';
     AuthModule,
     TasksModule,
     UserTasksModule,
+    AppControlModule,
   ],
 
   controllers: [AppController],

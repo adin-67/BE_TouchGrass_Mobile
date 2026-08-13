@@ -40,7 +40,7 @@ export class UsersService {
           $set: data,
         },
         {
-          new: true, //Yêu cầu Mongoose trả document sau khi cập nhật
+          returnDocument: 'after', //Yêu cầu Mongoose trả document sau khi cập nhật
           runValidators: true, //Yêu cầu Mongoose tiếp tục kiểm tra các luật trong UserSchema
         },
       )
@@ -131,5 +131,44 @@ export class UsersService {
     });
     const savedUser = await newUser.save();
     return savedUser;
+  }
+
+  async spendUnlockMinutes(
+    userId: string,
+    minutes: number,
+    operationKey: string,
+  ): Promise<UserDocument | null> {
+    return await this.userModel
+      .findOneAndUpdate(
+        {
+          _id: userId,
+          unlockMinutesBalance: { $gte: minutes },
+          unlockOperationKeys: { $ne: operationKey },
+        },
+        {
+          $inc: { unlockMinutesBalance: -minutes },
+          $addToSet: { unlockOperationKeys: operationKey },
+        },
+        { returnDocument: 'after', runValidators: true },
+      )
+      .exec();
+  }
+
+  async hasUnlockOperation(
+    userId: string,
+    operationKey: string,
+  ): Promise<boolean> {
+    const user = await this.userModel
+      .findOne({ _id: userId, unlockOperationKeys: operationKey })
+      .select('_id')
+      .lean()
+      .exec();
+    return user !== null;
+  }
+
+  async clearUnlockOperations(userId: string): Promise<void> {
+    await this.userModel
+      .updateOne({ _id: userId }, { $set: { unlockOperationKeys: [] } })
+      .exec();
   }
 }

@@ -90,5 +90,12 @@ export class User {
     select: false,
   })
   rewardedUserTasks!: Types.ObjectId[];
+
+  @Prop({
+    type: [String],
+    default: [],
+    select: false,
+  })
+  unlockOperationKeys!: string[];
 }
 export const UserSchema = SchemaFactory.createForClass(User);

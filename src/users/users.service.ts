@@ -7,6 +7,8 @@ import type { CreateUserData } from './interfaces/create-user-data';
 import { User, type UserDocument } from './schemas/user.schema';
 import type { UpdateProfileDto } from './dto/update-profile.dto';
 
+const XP_PER_LEVEL = 100;
+
 @Injectable()
 export class UsersService {
   constructor(
@@ -74,19 +76,47 @@ export class UsersService {
             $ne: userTaskObjectId,
           },
         },
-        {
-          $inc: {
-            xp: rewardXp,
-            leafPoints: rewardLp,
-            unlockMinutesBalance: unlockMinutes,
+        [
+          {
+            $set: {
+              xp: {
+                $add: [{ $ifNull: ['$xp', 0] }, rewardXp],
+              },
+              leafPoints: {
+                $add: [{ $ifNull: ['$leafPoints', 0] }, rewardLp],
+              },
+              unlockMinutesBalance: {
+                $add: [
+                  { $ifNull: ['$unlockMinutesBalance', 0] },
+                  unlockMinutes,
+                ],
+              },
+              rewardedUserTasks: {
+                $setUnion: [
+                  { $ifNull: ['$rewardedUserTasks', []] },
+                  [userTaskObjectId],
+                ],
+              },
+            },
           },
-          $addToSet: {
-            rewardedUserTasks: userTaskObjectId,
+          {
+            $set: {
+              level: {
+                $add: [
+                  {
+                    $floor: {
+                      $divide: ['$xp', XP_PER_LEVEL],
+                    },
+                  },
+                  1,
+                ],
+              },
+            },
           },
-        },
+        ],
         {
-          new: true,
-          runValidators: true,
+          returnDocument: 'after',
+          updatePipeline: true,
         },
       )
       .exec();

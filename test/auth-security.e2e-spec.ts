@@ -106,6 +106,13 @@ describe('Password reset security (e2e)', () => {
       .expect(400);
   });
 
+  it('rejects a new password shorter than eight characters', async () => {
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/reset-password')
+      .send({ token: 'x'.repeat(43), newPassword: 'Short1' })
+      .expect(400);
+  });
+
   it('rejects an expired reset token', async () => {
     const user = await userModel.findOne({ email }).lean().exec();
     expect(user).not.toBeNull();

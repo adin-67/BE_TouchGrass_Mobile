@@ -54,6 +54,9 @@ describe('App Control (e2e)', () => {
   let taskId: string;
   let sourceUserTaskId: string;
   let insufficientSourceUserTaskId: string;
+  let incompleteSourceUserTaskId: string;
+  let unclaimedSourceUserTaskId: string;
+  let extensionSourceUserTaskId: string;
 
   const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const emailA = `app-control-a-${suffix}@touchgrass.test`;
@@ -147,6 +150,35 @@ describe('App Control (e2e)', () => {
       rewardGranted: true,
     });
     insufficientSourceUserTaskId = sourceTwo._id.toString();
+    const incompleteSource = await userTaskModel.create({
+      user: new Types.ObjectId(userAId),
+      task: task._id,
+      cycleKey: `E2E_UNLOCK_INCOMPLETE_${suffix}`,
+      status: UserTaskStatus.IN_PROGRESS,
+      verificationStatus: UserTaskVerificationStatus.IN_PROGRESS,
+      rewardGranted: false,
+    });
+    incompleteSourceUserTaskId = incompleteSource._id.toString();
+    const unclaimedSource = await userTaskModel.create({
+      user: new Types.ObjectId(userAId),
+      task: task._id,
+      cycleKey: `E2E_UNLOCK_UNCLAIMED_${suffix}`,
+      status: UserTaskStatus.COMPLETED,
+      verificationStatus: UserTaskVerificationStatus.PASSED,
+      completedAt: new Date(),
+      rewardGranted: false,
+    });
+    unclaimedSourceUserTaskId = unclaimedSource._id.toString();
+    const extensionSource = await userTaskModel.create({
+      user: new Types.ObjectId(userAId),
+      task: task._id,
+      cycleKey: `E2E_UNLOCK_EXTENSION_${suffix}`,
+      status: UserTaskStatus.COMPLETED,
+      verificationStatus: UserTaskVerificationStatus.PASSED,
+      completedAt: new Date(),
+      rewardGranted: true,
+    });
+    extensionSourceUserTaskId = extensionSource._id.toString();
   });
 
   it('returns 401 for a missing or invalid JWT', async () => {
@@ -197,6 +229,16 @@ describe('App Control (e2e)', () => {
       .send(thisRule(packageA))
       .expect(201);
     ruleAId = (createdA.body as RuleResponse).id;
+    expect(createdA.body).toMatchObject({
+      id: ruleAId,
+      packageName: packageA,
+      appName: 'Example App',
+      enabled: true,
+      dailyLimitMinutes: 60,
+      activeDays: [0, 1, 2, 3, 4, 5, 6],
+      startTime: '08:00',
+      endTime: '22:00',
+    });
 
     const createdB = await request(app.getHttpServer())
       .post('/api/v1/app-control/rules')
@@ -231,6 +273,10 @@ describe('App Control (e2e)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({ dailyLimitMinutes: 30 })
       .expect(404);
+    await request(app.getHttpServer())
+      .delete(`/api/v1/app-control/rules/${ruleBId}`)
+      .set('Authorization', `Bearer ${tokenA}`)
+      .expect(404);
 
     const updated = await request(app.getHttpServer())
       .patch(`/api/v1/app-control/rules/${ruleAId}`)
@@ -240,6 +286,12 @@ describe('App Control (e2e)', () => {
     expect(
       (updated.body as { dailyLimitMinutes: number }).dailyLimitMinutes,
     ).toBe(30);
+
+    await request(app.getHttpServer())
+      .post('/api/v1/app-control/rules')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send(thisRule(packageA))
+      .expect(409);
   });
 
   it('disables a rule added to allowlist and rejects re-enabling it', async () => {
@@ -336,6 +388,26 @@ describe('App Control (e2e)', () => {
     await request(app.getHttpServer())
       .post('/api/v1/app-control/unlock')
       .set('Authorization', `Bearer ${tokenA}`)
+      .set('Idempotency-Key', `incomplete-${suffix}`)
+      .send({
+        packageName: packageA,
+        minutes: 5,
+        sourceUserTaskId: incompleteSourceUserTaskId,
+      })
+      .expect(409);
+    await request(app.getHttpServer())
+      .post('/api/v1/app-control/unlock')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .set('Idempotency-Key', `unclaimed-${suffix}`)
+      .send({
+        packageName: packageA,
+        minutes: 5,
+        sourceUserTaskId: unclaimedSourceUserTaskId,
+      })
+      .expect(409);
+    await request(app.getHttpServer())
+      .post('/api/v1/app-control/unlock')
+      .set('Authorization', `Bearer ${tokenA}`)
       .set('Idempotency-Key', `too-many-${suffix}`)
       .send({
         packageName: packageA,
@@ -353,6 +425,37 @@ describe('App Control (e2e)', () => {
         sourceUserTaskId: insufficientSourceUserTaskId,
       })
       .expect(400);
+  });
+
+  it('extends an active unlock from its current expiresAt', async () => {
+    const previous = await unlockModel
+      .findOne({ user: new Types.ObjectId(userAId), packageName: packageA })
+      .sort({ expiresAt: -1 })
+      .lean()
+      .exec();
+    expect(previous).not.toBeNull();
+    await userModel
+      .updateOne({ _id: userAId }, { $set: { unlockMinutesBalance: 10 } })
+      .exec();
+
+    const response = await request(app.getHttpServer())
+      .post('/api/v1/app-control/unlock')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .set('Idempotency-Key', `extension-${suffix}`)
+      .send({
+        packageName: packageA,
+        minutes: 3,
+        sourceUserTaskId: extensionSourceUserTaskId,
+      })
+      .expect(201);
+    const body = response.body as {
+      expiresAt: string;
+      remainingBalance: number;
+    };
+    expect(body.remainingBalance).toBe(7);
+    expect(new Date(body.expiresAt).getTime()).toBe(
+      previous!.expiresAt.getTime() + 3 * 60_000,
+    );
   });
 
   it('returns active=false after a session expires', async () => {

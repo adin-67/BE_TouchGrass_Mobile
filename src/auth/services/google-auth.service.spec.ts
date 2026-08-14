@@ -11,7 +11,7 @@ describe('GoogleAuthService', () => {
 
   it('accepts a verified Google identity from the official verifier', async () => {
     const service = new GoogleAuthService(configService);
-    mockVerifier(service, {
+    const verifier = mockVerifier(service, {
       sub: 'google-subject',
       email: 'User@Example.com',
       email_verified: true,
@@ -21,6 +21,10 @@ describe('GoogleAuthService', () => {
     await expect(service.verify('valid-id-token')).resolves.toMatchObject({
       providerAccountId: 'google-subject',
       email: 'user@example.com',
+    });
+    expect(verifier).toHaveBeenCalledWith({
+      idToken: 'valid-id-token',
+      audience: ['android-client-id'],
     });
   });
 
@@ -36,12 +40,25 @@ describe('GoogleAuthService', () => {
       UnauthorizedException,
     );
   });
+
+  it('rejects a token issued by an unexpected issuer', async () => {
+    const service = new GoogleAuthService(configService);
+    mockVerifier(service, {
+      sub: 'google-subject',
+      email: 'user@example.com',
+      email_verified: true,
+      iss: 'https://unexpected.example.com',
+    });
+    await expect(service.verify('invalid-issuer-token')).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+  });
 });
 
 function mockVerifier(
   service: GoogleAuthService,
   payload: Record<string, unknown>,
-): void {
+): jest.Mock {
   const client = service as unknown as {
     client: {
       verifyIdToken: jest.Mock;
@@ -50,4 +67,5 @@ function mockVerifier(
   client.client.verifyIdToken = jest.fn().mockResolvedValue({
     getPayload: () => payload,
   });
+  return client.client.verifyIdToken;
 }

@@ -4,7 +4,7 @@ import { Model, Types } from 'mongoose';
 
 import type { CreateUserData } from './interfaces/create-user-data';
 
-import { User, type UserDocument } from './schemas/user.schema';
+import { AuthProvider, User, type UserDocument } from './schemas/user.schema';
 import type { UpdateProfileDto } from './dto/update-profile.dto';
 
 const XP_PER_LEVEL = 100;
@@ -131,6 +131,45 @@ export class UsersService {
     });
     const savedUser = await newUser.save();
     return savedUser;
+  }
+
+  async findByProvider(
+    provider: AuthProvider,
+    providerAccountId: string,
+  ): Promise<UserDocument | null> {
+    return await this.userModel
+      .findOne({
+        authProviders: {
+          $elemMatch: { provider, providerAccountId },
+        },
+      })
+      .exec();
+  }
+
+  async createGoogleUser(data: {
+    email: string;
+    fullName: string;
+    avatarUrl: string | null;
+    providerAccountId: string;
+  }): Promise<UserDocument> {
+    return await this.userModel.create({
+      email: data.email.toLowerCase().trim(),
+      fullName: data.fullName.trim(),
+      avatarUrl: data.avatarUrl,
+      passwordHash: null,
+      authProviders: [
+        {
+          provider: AuthProvider.GOOGLE,
+          providerAccountId: data.providerAccountId,
+        },
+      ],
+    });
+  }
+
+  async updatePassword(userId: string, passwordHash: string): Promise<void> {
+    await this.userModel
+      .updateOne({ _id: userId }, { $set: { passwordHash } })
+      .exec();
   }
 
   async spendUnlockMinutes(

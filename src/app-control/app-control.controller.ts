@@ -107,6 +107,11 @@ export class AppControlController {
 
   @Post('unlock')
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({
+    summary: 'Dùng phút thưởng để mở khóa tạm thời một package',
+    description:
+      'Nếu package đã có phiên còn hiệu lực, số phút mới được cộng dồn từ expiresAt hiện tại. Retry phải dùng lại cùng Idempotency-Key.',
+  })
   @ApiHeader({
     name: 'Idempotency-Key',
     required: true,

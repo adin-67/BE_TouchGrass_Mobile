@@ -9,6 +9,22 @@ export enum UserRoles {
   ADMIN = 'admin',
 }
 
+export enum AuthProvider {
+  GOOGLE = 'GOOGLE',
+  APPLE = 'APPLE',
+}
+
+@Schema({ _id: false, versionKey: false })
+export class UserAuthProvider {
+  @Prop({ type: String, enum: AuthProvider, required: true })
+  provider!: AuthProvider;
+
+  @Prop({ required: true, trim: true })
+  providerAccountId!: string;
+}
+
+const UserAuthProviderSchema = SchemaFactory.createForClass(UserAuthProvider);
+
 @Schema({
   timestamps: true,
   versionKey: false,
@@ -30,10 +46,14 @@ export class User {
   })
   email!: string;
   @Prop({
-    required: true,
+    type: String,
+    default: null,
     select: false,
   })
-  passwordHash!: string;
+  passwordHash!: string | null;
+
+  @Prop({ type: [UserAuthProviderSchema], default: [] })
+  authProviders!: UserAuthProvider[];
 
   @Prop({
     type: String,
@@ -99,3 +119,13 @@ export class User {
   unlockOperationKeys!: string[];
 }
 export const UserSchema = SchemaFactory.createForClass(User);
+UserSchema.index(
+  {
+    'authProviders.provider': 1,
+    'authProviders.providerAccountId': 1,
+  },
+  {
+    unique: true,
+    partialFilterExpression: { 'authProviders.0': { $exists: true } },
+  },
+);

@@ -17,11 +17,18 @@ export const PROTECTED_PACKAGES = new Set([
   'com.android.dialer',
   'com.google.android.dialer',
   'com.android.incallui',
+  'com.android.contacts',
+  'com.google.android.contacts',
+  'com.samsung.android.contacts',
   'com.android.messaging',
   'com.google.android.apps.messaging',
   'com.samsung.android.messaging',
   'com.android.emergency',
   'com.google.android.gms',
+  'com.android.camera',
+  'com.android.camera2',
+  'com.google.android.googlecamera',
+  'com.sec.android.app.camera',
 ]);
 
 export const isProtectedPackage = (packageName: string): boolean =>

@@ -28,6 +28,38 @@ import { AppControlModule } from './app-control/app-control.module';
 
         JWT_ACCESS_SECRET: Joi.string().required(),
         JWT_ACCESS_EXPIRES_IN: Joi.string().required(),
+
+        PASSWORD_RESET_TTL_MINUTES: Joi.number()
+          .integer()
+          .min(10)
+          .max(15)
+          .default(15),
+        PASSWORD_RESET_URL: Joi.string().uri().when('MAIL_HOST', {
+          is: Joi.exist(),
+          then: Joi.required(),
+          otherwise: Joi.optional(),
+        }),
+        MAIL_HOST: Joi.string().optional(),
+        MAIL_PORT: Joi.number().port().default(587),
+        MAIL_SECURE: Joi.boolean().default(false),
+        MAIL_USER: Joi.string().when('MAIL_HOST', {
+          is: Joi.exist(),
+          then: Joi.required(),
+          otherwise: Joi.optional(),
+        }),
+        MAIL_PASSWORD: Joi.string().when('MAIL_HOST', {
+          is: Joi.exist(),
+          then: Joi.required(),
+          otherwise: Joi.optional(),
+        }),
+        MAIL_FROM: Joi.string().when('MAIL_HOST', {
+          is: Joi.exist(),
+          then: Joi.required(),
+          otherwise: Joi.optional(),
+        }),
+
+        GOOGLE_ANDROID_CLIENT_ID: Joi.string().allow('').optional(),
+        GOOGLE_WEB_CLIENT_ID: Joi.string().allow('').optional(),
       }),
 
       validationOptions: {

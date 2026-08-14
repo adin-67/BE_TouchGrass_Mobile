@@ -26,7 +26,12 @@ export class CreateAppControlRuleDto extends PackageFieldsDto {
   @Max(1440)
   dailyLimitMinutes!: number;
 
-  @ApiProperty({ type: [Number], example: [1, 2, 3, 4, 5] })
+  @ApiProperty({
+    type: [Number],
+    example: [0, 1, 2, 3, 4, 5, 6],
+    description:
+      '0=Thứ Hai, 1=Thứ Ba, 2=Thứ Tư, 3=Thứ Năm, 4=Thứ Sáu, 5=Thứ Bảy, 6=Chủ Nhật',
+  })
   @IsArray()
   @ArrayMinSize(1)
   @ArrayMaxSize(7)

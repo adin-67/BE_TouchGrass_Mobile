@@ -11,6 +11,19 @@ import { PersonalAllowlist } from '../src/app-control/schemas/personal-allowlist
 import { TemporaryUnlockSession } from '../src/app-control/schemas/temporary-unlock-session.schema';
 import { UsageSummary } from '../src/app-control/schemas/usage-summary.schema';
 import { User, type UserDocument } from '../src/users/schemas/user.schema';
+import {
+  Task,
+  TaskCategory,
+  TaskDifficulty,
+  TaskFrequency,
+  TaskTargetUnit,
+  TaskVerificationType,
+} from '../src/tasks/schemas/task.schema';
+import {
+  UserTask,
+  UserTaskStatus,
+  UserTaskVerificationStatus,
+} from '../src/user-tasks/schemas/user-task.schema';
 
 interface AuthResponse {
   accessToken: string;
@@ -31,11 +44,16 @@ describe('App Control (e2e)', () => {
   let allowlistModel: Model<PersonalAllowlist>;
   let unlockModel: Model<TemporaryUnlockSession>;
   let usageModel: Model<UsageSummary>;
+  let taskModel: Model<Task>;
+  let userTaskModel: Model<UserTask>;
   let tokenA: string;
   let tokenB: string;
   let userAId: string;
   let ruleAId: string;
   let ruleBId: string;
+  let taskId: string;
+  let sourceUserTaskId: string;
+  let insufficientSourceUserTaskId: string;
 
   const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const emailA = `app-control-a-${suffix}@touchgrass.test`;
@@ -64,6 +82,8 @@ describe('App Control (e2e)', () => {
     allowlistModel = moduleFixture.get(getModelToken(PersonalAllowlist.name));
     unlockModel = moduleFixture.get(getModelToken(TemporaryUnlockSession.name));
     usageModel = moduleFixture.get(getModelToken(UsageSummary.name));
+    taskModel = moduleFixture.get(getModelToken(Task.name));
+    userTaskModel = moduleFixture.get(getModelToken(UserTask.name));
 
     const responseA = await request(app.getHttpServer())
       .post('/api/v1/auth/register')
@@ -87,6 +107,46 @@ describe('App Control (e2e)', () => {
       .expect(201);
     const authB = responseB.body as AuthResponse;
     tokenB = authB.accessToken;
+
+    const task = await taskModel.create({
+      code: `E2E_UNLOCK_${Date.now()}`,
+      title: 'E2E Unlock Task',
+      description: 'Task used only by App Control e2e tests',
+      category: TaskCategory.WELLNESS,
+      verificationType: TaskVerificationType.MANUAL_CHECKIN,
+      frequency: TaskFrequency.ANYTIME,
+      emoji: 'T',
+      difficulty: TaskDifficulty.EASY,
+      rewardXp: 1,
+      rewardLp: 1,
+      unlockMinutes: 10,
+      targetValue: 1,
+      targetUnit: TaskTargetUnit.MINUTE,
+      estimatedMinutes: 1,
+      instructions: ['Complete e2e test task'],
+      active: true,
+    });
+    taskId = task._id.toString();
+    const sourceOne = await userTaskModel.create({
+      user: new Types.ObjectId(userAId),
+      task: task._id,
+      cycleKey: `E2E_UNLOCK_ONE_${suffix}`,
+      status: UserTaskStatus.COMPLETED,
+      verificationStatus: UserTaskVerificationStatus.PASSED,
+      completedAt: new Date(),
+      rewardGranted: true,
+    });
+    sourceUserTaskId = sourceOne._id.toString();
+    const sourceTwo = await userTaskModel.create({
+      user: new Types.ObjectId(userAId),
+      task: task._id,
+      cycleKey: `E2E_UNLOCK_TWO_${suffix}`,
+      status: UserTaskStatus.COMPLETED,
+      verificationStatus: UserTaskVerificationStatus.PASSED,
+      completedAt: new Date(),
+      rewardGranted: true,
+    });
+    insufficientSourceUserTaskId = sourceTwo._id.toString();
   });
 
   it('returns 401 for a missing or invalid JWT', async () => {
@@ -104,6 +164,16 @@ describe('App Control (e2e)', () => {
       .post('/api/v1/app-control/rules')
       .set('Authorization', `Bearer ${tokenA}`)
       .send(thisRule('com.android.settings'))
+      .expect(403);
+    await request(app.getHttpServer())
+      .post('/api/v1/app-control/unlock')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .set('Idempotency-Key', `protected-${suffix}`)
+      .send({
+        packageName: 'com.android.settings',
+        minutes: 5,
+        sourceUserTaskId,
+      })
       .expect(403);
   });
 
@@ -216,7 +286,11 @@ describe('App Control (e2e)', () => {
       .post('/api/v1/app-control/unlock')
       .set('Authorization', `Bearer ${tokenA}`)
       .set('Idempotency-Key', `unlock-${suffix}`)
-      .send({ packageName: packageA, minutes: 5 });
+      .send({
+        packageName: packageA,
+        minutes: 5,
+        sourceUserTaskId,
+      });
     expect(first.status).toBe(201);
     expect(
       (first.body as { remainingBalance: number; alreadyProcessed: boolean })
@@ -227,7 +301,7 @@ describe('App Control (e2e)', () => {
       .post('/api/v1/app-control/unlock')
       .set('Authorization', `Bearer ${tokenA}`)
       .set('Idempotency-Key', `unlock-${suffix}`)
-      .send({ packageName: packageA, minutes: 5 })
+      .send({ packageName: packageA, minutes: 5, sourceUserTaskId })
       .expect(201);
     expect(
       (repeated.body as { remainingBalance: number; alreadyProcessed: boolean })
@@ -237,6 +311,13 @@ describe('App Control (e2e)', () => {
       (repeated.body as { alreadyProcessed: boolean }).alreadyProcessed,
     ).toBe(true);
 
+    await request(app.getHttpServer())
+      .post('/api/v1/app-control/unlock')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .set('Idempotency-Key', `reuse-source-${suffix}`)
+      .send({ packageName: packageA, minutes: 5, sourceUserTaskId })
+      .expect(409);
+
     const user = await userModel.findById(userAId).lean().exec();
     expect(user?.unlockMinutesBalance).toBe(5);
   });
@@ -244,9 +325,33 @@ describe('App Control (e2e)', () => {
   it('rejects unlock when balance is insufficient', async () => {
     await request(app.getHttpServer())
       .post('/api/v1/app-control/unlock')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .set('Idempotency-Key', `foreign-source-${suffix}`)
+      .send({
+        packageName: packageB,
+        minutes: 5,
+        sourceUserTaskId,
+      })
+      .expect(404);
+    await request(app.getHttpServer())
+      .post('/api/v1/app-control/unlock')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .set('Idempotency-Key', `too-many-${suffix}`)
+      .send({
+        packageName: packageA,
+        minutes: 11,
+        sourceUserTaskId: insufficientSourceUserTaskId,
+      })
+      .expect(400);
+    await request(app.getHttpServer())
+      .post('/api/v1/app-control/unlock')
       .set('Authorization', `Bearer ${tokenA}`)
       .set('Idempotency-Key', `insufficient-${suffix}`)
-      .send({ packageName: packageA, minutes: 6 })
+      .send({
+        packageName: packageA,
+        minutes: 6,
+        sourceUserTaskId: insufficientSourceUserTaskId,
+      })
       .expect(400);
   });
 
@@ -275,9 +380,14 @@ describe('App Control (e2e)', () => {
       .post('/api/v1/app-control/usage-summary')
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
-        date: '2026-08-13',
-        totalScreenTimeSeconds: 3600,
-        apps: [{ packageName: packageA, foregroundSeconds: 600 }],
+        date: '2026-08-14',
+        apps: [
+          {
+            packageName: packageA,
+            totalTimeInForegroundMs: 600000,
+            lastTimeUsed: '2026-08-14T08:00:00.000Z',
+          },
+        ],
       })
       .expect(201);
 
@@ -292,7 +402,7 @@ describe('App Control (e2e)', () => {
     expect(
       (available.body as { totalScreenTimeSeconds: number })
         .totalScreenTimeSeconds,
-    ).toBe(3600);
+    ).toBe(600);
   });
 
   it('deletes a rule owned by the current user', async () => {
@@ -307,6 +417,7 @@ describe('App Control (e2e)', () => {
   });
 
   afterAll(async () => {
+    if (!userModel || !app) return;
     const users = await userModel
       .find({ email: { $in: [emailA, emailB] } })
       .select('_id')
@@ -318,7 +429,9 @@ describe('App Control (e2e)', () => {
       allowlistModel.deleteMany({ user: { $in: userIds } }).exec(),
       unlockModel.deleteMany({ user: { $in: userIds } }).exec(),
       usageModel.deleteMany({ user: { $in: userIds } }).exec(),
+      userTaskModel.deleteMany({ user: { $in: userIds } }).exec(),
     ]);
+    await taskModel.deleteOne({ _id: taskId }).exec();
     await userModel.deleteMany({ _id: { $in: userIds } }).exec();
     await app.close();
   });

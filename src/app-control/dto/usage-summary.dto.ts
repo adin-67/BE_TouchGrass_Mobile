@@ -9,6 +9,9 @@ import {
   Max,
   MaxLength,
   Min,
+  IsISO8601,
+  IsOptional,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 
@@ -21,12 +24,35 @@ export class AppUsageItemDto {
   @Matches(PACKAGE_NAME_PATTERN)
   packageName!: string;
 
-  @ApiProperty({ example: 600, minimum: 0, maximum: 86400 })
+  @ApiProperty({ example: 600, minimum: 0, maximum: 86400, required: false })
+  @ValidateIf(
+    (item: AppUsageItemDto) => item.totalTimeInForegroundMs === undefined,
+  )
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(0)
   @Max(86400)
-  foregroundSeconds!: number;
+  foregroundSeconds?: number;
+
+  @ApiProperty({
+    example: 3600000,
+    minimum: 0,
+    maximum: 86400000,
+    required: false,
+  })
+  @ValidateIf((item: AppUsageItemDto) => item.foregroundSeconds === undefined)
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(86400000)
+  totalTimeInForegroundMs?: number;
+
+  @ApiProperty({ example: '2026-08-14T08:00:00.000Z', required: false })
+  @IsOptional()
+  @IsISO8601()
+  lastTimeUsed?: string;
 }
 
 export class UpsertUsageSummaryDto {
@@ -34,12 +60,13 @@ export class UpsertUsageSummaryDto {
   @Matches(/^\d{4}-\d{2}-\d{2}$/)
   date!: string;
 
-  @ApiProperty({ example: 3600, minimum: 0, maximum: 86400 })
+  @ApiProperty({ example: 3600, minimum: 0, maximum: 86400, required: false })
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(0)
   @Max(86400)
-  totalScreenTimeSeconds!: number;
+  totalScreenTimeSeconds?: number;
 
   @ApiProperty({ type: [AppUsageItemDto] })
   @IsArray()

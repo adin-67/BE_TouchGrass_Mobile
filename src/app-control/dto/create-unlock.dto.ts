@@ -1,6 +1,14 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsInt, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
+import {
+  IsInt,
+  IsMongoId,
+  IsString,
+  Matches,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
 
 import { PACKAGE_NAME_PATTERN } from './package-fields.dto';
 
@@ -17,4 +25,8 @@ export class CreateTemporaryUnlockDto {
   @Min(1)
   @Max(1440)
   minutes!: number;
+
+  @ApiProperty({ example: '66b9f2bc7d9d151a1b5d1234' })
+  @IsMongoId()
+  sourceUserTaskId!: string;
 }

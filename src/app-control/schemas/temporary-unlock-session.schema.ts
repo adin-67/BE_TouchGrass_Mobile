@@ -63,3 +63,10 @@ TemporaryUnlockSessionSchema.index(
   { unique: true },
 );
 TemporaryUnlockSessionSchema.index({ user: 1, packageName: 1, expiresAt: -1 });
+TemporaryUnlockSessionSchema.index(
+  { sourceUserTask: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { sourceUserTask: { $type: 'objectId' } },
+  },
+);

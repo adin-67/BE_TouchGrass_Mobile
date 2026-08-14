@@ -33,17 +33,22 @@ export class AllowlistListResponseDto {
 }
 
 export class UnlockResponseDto {
+  @ApiProperty() id!: string;
   @ApiProperty() sessionId!: string;
   @ApiProperty() packageName!: string;
   @ApiProperty() startedAt!: Date;
   @ApiProperty() expiresAt!: Date;
   @ApiProperty() minutesSpent!: number;
+  @ApiProperty() minutes!: number;
+  @ApiProperty() startsAt!: Date;
+  @ApiProperty() active!: boolean;
   @ApiProperty({ enum: TemporaryUnlockStatus }) status!: TemporaryUnlockStatus;
   @ApiProperty() remainingBalance!: number;
   @ApiProperty() alreadyProcessed!: boolean;
 }
 
 export class UnlockStatusResponseDto {
+  @ApiProperty() packageName!: string;
   @ApiProperty() active!: boolean;
   @ApiPropertyOptional({ nullable: true }) expiresAt!: Date | null;
   @ApiProperty() remainingSeconds!: number;
@@ -62,6 +67,8 @@ export class UsageSummaryResponseDto {
 export class UsageSummaryAppResponseDto {
   @ApiProperty() packageName!: string;
   @ApiProperty() foregroundSeconds!: number;
+  @ApiProperty() totalTimeInForegroundMs!: number;
+  @ApiPropertyOptional({ nullable: true }) lastTimeUsed!: Date | null;
 }
 
 export class UsageSummaryRecordResponseDto {

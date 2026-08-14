@@ -5,6 +5,8 @@ describe('isProtectedPackage', () => {
     expect(isProtectedPackage('com.touchgrassmobile')).toBe(true);
     expect(isProtectedPackage('COM.ANDROID.SETTINGS')).toBe(true);
     expect(isProtectedPackage('com.google.android.gms')).toBe(true);
+    expect(isProtectedPackage('com.android.contacts')).toBe(true);
+    expect(isProtectedPackage('com.android.camera2')).toBe(true);
   });
 
   it('does not automatically protect a user-selected third-party package', () => {

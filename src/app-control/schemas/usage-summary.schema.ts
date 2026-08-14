@@ -17,6 +17,12 @@ export class AppUsageItem {
 
   @Prop({ required: true, min: 0, max: 86400 })
   foregroundSeconds!: number;
+
+  @Prop({ required: true, min: 0, max: 86400000 })
+  totalTimeInForegroundMs!: number;
+
+  @Prop({ type: Date, default: null })
+  lastTimeUsed!: Date | null;
 }
 
 const AppUsageItemSchema = SchemaFactory.createForClass(AppUsageItem);

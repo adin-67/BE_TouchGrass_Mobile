@@ -9,6 +9,12 @@ import { InjectModel } from '@nestjs/mongoose';
 import { isValidObjectId, Model, Types } from 'mongoose';
 
 import { UsersService } from '../users/users.service';
+import { TasksService } from '../tasks/tasks.service';
+import {
+  UserTask,
+  type UserTaskDocument,
+  UserTaskStatus,
+} from '../user-tasks/schemas/user-task.schema';
 import type { CreateAllowlistDto } from './dto/create-allowlist.dto';
 import type { CreateAppControlRuleDto } from './dto/create-rule.dto';
 import type { CreateTemporaryUnlockDto } from './dto/create-unlock.dto';
@@ -44,7 +50,10 @@ export class AppControlService {
     private readonly unlockModel: Model<TemporaryUnlockSessionDocument>,
     @InjectModel(UsageSummary.name)
     private readonly usageModel: Model<UsageSummaryDocument>,
+    @InjectModel(UserTask.name)
+    private readonly userTaskModel: Model<UserTaskDocument>,
     private readonly usersService: UsersService,
+    private readonly tasksService: TasksService,
   ) {}
 
   async listRules(userId: string) {
@@ -205,25 +214,68 @@ export class AppControlService {
         'Enabled app control rule not found for this package',
       );
 
+    const sourceUserTask = await this.userTaskModel
+      .findOne({
+        _id: this.objectId(dto.sourceUserTaskId, 'source user task'),
+        user: this.userObjectId(userId),
+      })
+      .exec();
+    if (!sourceUserTask) {
+      throw new NotFoundException('Source user task not found');
+    }
+    if (
+      sourceUserTask.status !== UserTaskStatus.COMPLETED ||
+      !sourceUserTask.rewardGranted
+    ) {
+      throw new ConflictException(
+        'Source user task must be completed and its reward must be claimed',
+      );
+    }
+    const sourceTask = await this.tasksService.findByIdForAdmin(
+      sourceUserTask.task.toString(),
+    );
+    if (dto.minutes > sourceTask.unlockMinutes) {
+      throw new BadRequestException(
+        `minutes cannot exceed the source task reward of ${sourceTask.unlockMinutes}`,
+      );
+    }
+
     let session = await this.unlockModel
       .findOne({ user: this.userObjectId(userId), operationKey: key })
       .select('+debited')
       .exec();
     if (session) {
-      this.assertSameUnlock(session, packageName, dto.minutes);
+      this.assertSameUnlock(
+        session,
+        packageName,
+        dto.minutes,
+        dto.sourceUserTaskId,
+      );
       const balance = await this.ensureDebited(userId, session);
       return this.unlockResponse(session, balance, true);
     }
 
     const now = new Date();
+    const currentActiveSession = await this.unlockModel
+      .findOne({
+        user: this.userObjectId(userId),
+        packageName,
+        status: TemporaryUnlockStatus.ACTIVE,
+        expiresAt: { $gt: now },
+        debited: true,
+      })
+      .sort({ expiresAt: -1 })
+      .lean()
+      .exec();
+    const extensionBase = currentActiveSession?.expiresAt ?? now;
     try {
       session = await this.unlockModel.create({
         user: new Types.ObjectId(userId),
         packageName,
         startedAt: now,
-        expiresAt: new Date(now.getTime() + dto.minutes * 60_000),
+        expiresAt: new Date(extensionBase.getTime() + dto.minutes * 60_000),
         minutesSpent: dto.minutes,
-        sourceUserTask: null,
+        sourceUserTask: sourceUserTask._id,
         status: TemporaryUnlockStatus.ACTIVE,
         operationKey: key,
         debited: false,
@@ -234,9 +286,17 @@ export class AppControlService {
         .findOne({ user: this.userObjectId(userId), operationKey: key })
         .select('+debited')
         .exec();
-      if (!session)
-        throw new ConflictException('Unlock request is being processed');
-      this.assertSameUnlock(session, packageName, dto.minutes);
+      if (!session) {
+        throw new ConflictException(
+          'This source user task has already been used for temporary unlock',
+        );
+      }
+      this.assertSameUnlock(
+        session,
+        packageName,
+        dto.minutes,
+        dto.sourceUserTaskId,
+      );
     }
 
     const balance = await this.ensureDebited(userId, session);
@@ -268,8 +328,14 @@ export class AppControlService {
       .sort({ expiresAt: -1 })
       .exec();
     if (!session)
-      return { active: false, expiresAt: null, remainingSeconds: 0 };
+      return {
+        packageName,
+        active: false,
+        expiresAt: null,
+        remainingSeconds: 0,
+      };
     return {
+      packageName,
       active: true,
       expiresAt: session.expiresAt,
       remainingSeconds: Math.max(
@@ -289,11 +355,34 @@ export class AppControlService {
         'date must be a real calendar date in YYYY-MM-DD format',
       );
     }
-    const foregroundTotal = dto.apps.reduce(
+    if (
+      dto.apps.some(
+        (app) =>
+          app.foregroundSeconds === undefined &&
+          app.totalTimeInForegroundMs === undefined,
+      )
+    ) {
+      throw new BadRequestException(
+        'Each app must include totalTimeInForegroundMs or foregroundSeconds',
+      );
+    }
+    const normalizedApps = dto.apps.map((app) => {
+      const totalTimeInForegroundMs =
+        app.totalTimeInForegroundMs ?? (app.foregroundSeconds ?? 0) * 1000;
+      return {
+        packageName: this.normalizePackage(app.packageName),
+        foregroundSeconds: Math.floor(totalTimeInForegroundMs / 1000),
+        totalTimeInForegroundMs,
+        lastTimeUsed: app.lastTimeUsed ? new Date(app.lastTimeUsed) : null,
+      };
+    });
+    const foregroundTotal = normalizedApps.reduce(
       (sum, app) => sum + app.foregroundSeconds,
       0,
     );
-    if (foregroundTotal > dto.totalScreenTimeSeconds) {
+    const totalScreenTimeSeconds =
+      dto.totalScreenTimeSeconds ?? foregroundTotal;
+    if (foregroundTotal > totalScreenTimeSeconds) {
       throw new BadRequestException(
         'Sum of app foregroundSeconds cannot exceed totalScreenTimeSeconds',
       );
@@ -303,11 +392,8 @@ export class AppControlService {
         { user: this.userObjectId(userId), date: dto.date },
         {
           $set: {
-            totalScreenTimeSeconds: dto.totalScreenTimeSeconds,
-            apps: dto.apps.map((app) => ({
-              ...app,
-              packageName: this.normalizePackage(app.packageName),
-            })),
+            totalScreenTimeSeconds,
+            apps: normalizedApps,
           },
           $setOnInsert: { user: new Types.ObjectId(userId), date: dto.date },
         },
@@ -320,6 +406,8 @@ export class AppControlService {
       apps: summary.apps.map((app) => ({
         packageName: app.packageName,
         foregroundSeconds: app.foregroundSeconds,
+        totalTimeInForegroundMs: app.totalTimeInForegroundMs,
+        lastTimeUsed: app.lastTimeUsed,
       })),
       updatedAt: summary.updatedAt,
     };
@@ -414,10 +502,12 @@ export class AppControlService {
     session: TemporaryUnlockSessionDocument,
     packageName: string,
     minutes: number,
+    sourceUserTaskId: string,
   ) {
     if (
       session.packageName !== packageName ||
-      session.minutesSpent !== minutes
+      session.minutesSpent !== minutes ||
+      session.sourceUserTask?.toString() !== sourceUserTaskId
     ) {
       throw new ConflictException(
         'Idempotency-Key was already used for a different unlock request',
@@ -431,12 +521,18 @@ export class AppControlService {
     alreadyProcessed: boolean,
   ) {
     return {
+      id: session._id.toString(),
       sessionId: session._id.toString(),
       packageName: session.packageName,
+      minutes: session.minutesSpent,
+      startsAt: session.startedAt,
       startedAt: session.startedAt,
       expiresAt: session.expiresAt,
       minutesSpent: session.minutesSpent,
       status: session.status,
+      active:
+        session.status === TemporaryUnlockStatus.ACTIVE &&
+        session.expiresAt.getTime() > Date.now(),
       remainingBalance,
       alreadyProcessed,
     };

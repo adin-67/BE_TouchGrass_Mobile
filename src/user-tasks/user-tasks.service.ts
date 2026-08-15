@@ -516,7 +516,7 @@ export class UserTasksService {
           },
         },
         {
-          new: true,
+          returnDocument: 'after',
           runValidators: true,
         },
       )
@@ -569,7 +569,7 @@ export class UserTasksService {
       rewardPreview: {
         xp: task.rewardXp,
         leafPoints: task.rewardLp,
-        unlockMinutes: task.unlockMinutes,
+        unlockMinutes: 0,
       },
     });
 
@@ -638,7 +638,7 @@ export class UserTasksService {
           },
         },
         {
-          new: true,
+          returnDocument: 'after',
           runValidators: true,
         },
       )
@@ -728,7 +728,7 @@ export class UserTasksService {
           },
         },
         {
-          new: true,
+          returnDocument: 'after',
           runValidators: true,
         },
       )
@@ -839,7 +839,7 @@ export class UserTasksService {
           },
         },
         {
-          new: true,
+          returnDocument: 'after',
           runValidators: true,
         },
       )
@@ -965,7 +965,7 @@ export class UserTasksService {
           },
         },
         {
-          new: true,
+          returnDocument: 'after',
           runValidators: true,
         },
       )
@@ -1148,7 +1148,7 @@ export class UserTasksService {
           },
         },
         {
-          new: true,
+          returnDocument: 'after',
           runValidators: true,
         },
       )
@@ -1280,7 +1280,7 @@ export class UserTasksService {
           },
         },
         {
-          new: true,
+          returnDocument: 'after',
           runValidators: true,
         },
       )
@@ -1405,7 +1405,7 @@ export class UserTasksService {
           },
         },
         {
-          new: true,
+          returnDocument: 'after',
           runValidators: true,
         },
       )
@@ -1620,7 +1620,7 @@ export class UserTasksService {
             },
           },
           {
-            new: true,
+            returnDocument: 'after',
             runValidators: true,
           },
         )
@@ -1692,7 +1692,7 @@ export class UserTasksService {
           },
         },
         {
-          new: true,
+          returnDocument: 'after',
           runValidators: true,
         },
       )
@@ -1762,7 +1762,6 @@ export class UserTasksService {
         userTaskId,
         task.rewardXp,
         task.rewardLp,
-        task.unlockMinutes,
       );
 
       if (!rewardedUser) {
@@ -1800,7 +1799,7 @@ export class UserTasksService {
       reward: {
         xp: task.rewardXp,
         leafPoints: task.rewardLp,
-        unlockMinutes: task.unlockMinutes,
+        unlockMinutes: 0,
       },
       profile: {
         xp: user.xp,
@@ -1838,7 +1837,7 @@ export class UserTasksService {
           },
         },
         {
-          new: true,
+          returnDocument: 'after',
           upsert: true,
           runValidators: true,
         },

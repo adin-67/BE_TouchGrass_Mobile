@@ -1,7 +1,8 @@
-import { OmitType, PartialType } from '@nestjs/swagger';
+import { ApiProperty } from '@nestjs/swagger';
+import { IsBoolean } from 'class-validator';
 
-import { CreateAppControlRuleDto } from './create-rule.dto';
-
-export class UpdateAppControlRuleDto extends PartialType(
-  OmitType(CreateAppControlRuleDto, ['packageName'] as const),
-) {}
+export class UpdateAppControlRuleDto {
+  @ApiProperty({ example: true })
+  @IsBoolean()
+  enabled!: boolean;
+}

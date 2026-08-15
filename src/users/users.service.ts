@@ -64,7 +64,6 @@ export class UsersService {
     userTaskId: string,
     rewardXp: number,
     rewardLp: number,
-    unlockMinutes: number,
   ): Promise<UserDocument | null> {
     const userTaskObjectId = new Types.ObjectId(userTaskId);
 
@@ -84,12 +83,6 @@ export class UsersService {
               },
               leafPoints: {
                 $add: [{ $ifNull: ['$leafPoints', 0] }, rewardLp],
-              },
-              unlockMinutesBalance: {
-                $add: [
-                  { $ifNull: ['$unlockMinutesBalance', 0] },
-                  unlockMinutes,
-                ],
               },
               rewardedUserTasks: {
                 $setUnion: [
@@ -172,20 +165,20 @@ export class UsersService {
       .exec();
   }
 
-  async spendUnlockMinutes(
+  async spendLeafPoints(
     userId: string,
-    minutes: number,
+    leafPointCost: number,
     operationKey: string,
   ): Promise<UserDocument | null> {
     return await this.userModel
       .findOneAndUpdate(
         {
           _id: userId,
-          unlockMinutesBalance: { $gte: minutes },
+          leafPoints: { $gte: leafPointCost },
           unlockOperationKeys: { $ne: operationKey },
         },
         {
-          $inc: { unlockMinutesBalance: -minutes },
+          $inc: { leafPoints: -leafPointCost },
           $addToSet: { unlockOperationKeys: operationKey },
         },
         { returnDocument: 'after', runValidators: true },

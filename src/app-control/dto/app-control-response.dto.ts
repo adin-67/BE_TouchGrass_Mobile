@@ -1,16 +1,10 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
-import { TemporaryUnlockStatus } from '../schemas/temporary-unlock-session.schema';
-
 export class AppControlRuleResponseDto {
   @ApiProperty() id!: string;
   @ApiProperty() packageName!: string;
   @ApiProperty() appName!: string;
   @ApiProperty() enabled!: boolean;
-  @ApiProperty() dailyLimitMinutes!: number;
-  @ApiProperty({ type: [Number] }) activeDays!: number[];
-  @ApiProperty() startTime!: string;
-  @ApiProperty() endTime!: string;
   @ApiProperty() createdAt!: Date;
   @ApiProperty() updatedAt!: Date;
 }
@@ -34,22 +28,29 @@ export class AllowlistListResponseDto {
 
 export class UnlockResponseDto {
   @ApiProperty() id!: string;
-  @ApiProperty() sessionId!: string;
   @ApiProperty() packageName!: string;
+  @ApiProperty() minutes!: number;
+  @ApiProperty() leafPointsSpent!: number;
+  @ApiProperty() remainingLeafPoints!: number;
   @ApiProperty() startedAt!: Date;
   @ApiProperty() expiresAt!: Date;
-  @ApiProperty() minutesSpent!: number;
-  @ApiProperty() minutes!: number;
-  @ApiProperty() startsAt!: Date;
-  @ApiProperty() active!: boolean;
-  @ApiProperty({ enum: TemporaryUnlockStatus }) status!: TemporaryUnlockStatus;
-  @ApiProperty() remainingBalance!: number;
   @ApiProperty() alreadyProcessed!: boolean;
+}
+
+export class UnlockOptionResponseDto {
+  @ApiProperty({ example: 'UNLOCK_15' }) id!: string;
+  @ApiProperty({ example: 15 }) minutes!: number;
+  @ApiProperty({ example: 15 }) leafPointCost!: number;
+}
+
+export class UnlockOptionsResponseDto {
+  @ApiProperty({ type: [UnlockOptionResponseDto] })
+  items!: UnlockOptionResponseDto[];
 }
 
 export class UnlockStatusResponseDto {
   @ApiProperty() packageName!: string;
-  @ApiProperty() active!: boolean;
+  @ApiProperty() unlocked!: boolean;
   @ApiPropertyOptional({ nullable: true }) expiresAt!: Date | null;
   @ApiProperty() remainingSeconds!: number;
 }

@@ -4,23 +4,19 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { isValidObjectId, Model, Types } from 'mongoose';
 
 import { UsersService } from '../users/users.service';
-import { TasksService } from '../tasks/tasks.service';
-import {
-  UserTask,
-  type UserTaskDocument,
-  UserTaskStatus,
-} from '../user-tasks/schemas/user-task.schema';
 import type { CreateAllowlistDto } from './dto/create-allowlist.dto';
 import type { CreateAppControlRuleDto } from './dto/create-rule.dto';
 import type { CreateTemporaryUnlockDto } from './dto/create-unlock.dto';
 import type { UpdateAppControlRuleDto } from './dto/update-rule.dto';
 import type { UpsertUsageSummaryDto } from './dto/usage-summary.dto';
 import { isProtectedPackage } from './protected-packages';
+import { getUnlockOption, UNLOCK_OPTIONS } from './unlock-options';
 import {
   AppControlRule,
   type AppControlRuleDocument,
@@ -40,7 +36,7 @@ import {
 } from './schemas/usage-summary.schema';
 
 @Injectable()
-export class AppControlService {
+export class AppControlService implements OnModuleInit {
   constructor(
     @InjectModel(AppControlRule.name)
     private readonly ruleModel: Model<AppControlRuleDocument>,
@@ -50,11 +46,26 @@ export class AppControlService {
     private readonly unlockModel: Model<TemporaryUnlockSessionDocument>,
     @InjectModel(UsageSummary.name)
     private readonly usageModel: Model<UsageSummaryDocument>,
-    @InjectModel(UserTask.name)
-    private readonly userTaskModel: Model<UserTaskDocument>,
     private readonly usersService: UsersService,
-    private readonly tasksService: TasksService,
   ) {}
+
+  async onModuleInit(): Promise<void> {
+    await this.ruleModel.collection.updateMany(
+      {},
+      {
+        $unset: {
+          dailyLimitMinutes: '',
+          activeDays: '',
+          startTime: '',
+          endTime: '',
+        },
+      },
+    );
+  }
+
+  getUnlockOptions() {
+    return { items: UNLOCK_OPTIONS.map((option) => ({ ...option })) };
+  }
 
   async listRules(userId: string) {
     const user = this.userObjectId(userId);
@@ -81,11 +92,10 @@ export class AppControlService {
 
     try {
       const rule = await this.ruleModel.create({
-        ...dto,
         user: new Types.ObjectId(userId),
         packageName,
         appName: dto.appName.trim(),
-        activeDays: [...dto.activeDays].sort((a, b) => a - b),
+        enabled: dto.enabled,
       });
       return this.ruleResponse(rule);
     } catch (error: unknown) {
@@ -120,15 +130,7 @@ export class AppControlService {
       .findOneAndUpdate(
         { _id: current._id, user: this.userObjectId(userId) },
         {
-          $set: {
-            ...dto,
-            ...(dto.appName === undefined
-              ? {}
-              : { appName: dto.appName.trim() }),
-            ...(dto.activeDays === undefined
-              ? {}
-              : { activeDays: [...dto.activeDays].sort((a, b) => a - b) }),
-          },
+          $set: { enabled: dto.enabled },
         },
         { returnDocument: 'after', runValidators: true },
       )
@@ -213,44 +215,14 @@ export class AppControlService {
       throw new NotFoundException(
         'Enabled app control rule not found for this package',
       );
-
-    const sourceUserTask = await this.userTaskModel
-      .findOne({
-        _id: this.objectId(dto.sourceUserTaskId, 'source user task'),
-        user: this.userObjectId(userId),
-      })
-      .exec();
-    if (!sourceUserTask) {
-      throw new NotFoundException('Source user task not found');
-    }
-    if (
-      sourceUserTask.status !== UserTaskStatus.COMPLETED ||
-      !sourceUserTask.rewardGranted
-    ) {
-      throw new ConflictException(
-        'Source user task must be completed and its reward must be claimed',
-      );
-    }
-    const sourceTask = await this.tasksService.findByIdForAdmin(
-      sourceUserTask.task.toString(),
-    );
-    if (dto.minutes > sourceTask.unlockMinutes) {
-      throw new BadRequestException(
-        `minutes cannot exceed the source task reward of ${sourceTask.unlockMinutes}`,
-      );
-    }
+    const option = getUnlockOption(dto.optionId);
 
     let session = await this.unlockModel
       .findOne({ user: this.userObjectId(userId), operationKey: key })
       .select('+debited')
       .exec();
     if (session) {
-      this.assertSameUnlock(
-        session,
-        packageName,
-        dto.minutes,
-        dto.sourceUserTaskId,
-      );
+      this.assertSameUnlock(session, packageName, option.id);
       const balance = await this.ensureDebited(userId, session);
       return this.unlockResponse(session, balance, true);
     }
@@ -273,9 +245,11 @@ export class AppControlService {
         user: new Types.ObjectId(userId),
         packageName,
         startedAt: now,
-        expiresAt: new Date(extensionBase.getTime() + dto.minutes * 60_000),
-        minutesSpent: dto.minutes,
-        sourceUserTask: sourceUserTask._id,
+        expiresAt: new Date(extensionBase.getTime() + option.minutes * 60_000),
+        minutesSpent: option.minutes,
+        optionId: option.id,
+        leafPointsSpent: option.leafPointCost,
+        sourceUserTask: null,
         status: TemporaryUnlockStatus.ACTIVE,
         operationKey: key,
         debited: false,
@@ -287,16 +261,9 @@ export class AppControlService {
         .select('+debited')
         .exec();
       if (!session) {
-        throw new ConflictException(
-          'This source user task has already been used for temporary unlock',
-        );
+        throw new ConflictException('Unlock request could not be created');
       }
-      this.assertSameUnlock(
-        session,
-        packageName,
-        dto.minutes,
-        dto.sourceUserTaskId,
-      );
+      this.assertSameUnlock(session, packageName, option.id);
     }
 
     const balance = await this.ensureDebited(userId, session);
@@ -330,13 +297,13 @@ export class AppControlService {
     if (!session)
       return {
         packageName,
-        active: false,
+        unlocked: false,
         expiresAt: null,
         remainingSeconds: 0,
       };
     return {
       packageName,
-      active: true,
+      unlocked: true,
       expiresAt: session.expiresAt,
       remainingSeconds: Math.max(
         0,
@@ -468,9 +435,9 @@ export class AppControlService {
     session: TemporaryUnlockSessionDocument,
   ) {
     if (!session.debited) {
-      const user = await this.usersService.spendUnlockMinutes(
+      const user = await this.usersService.spendLeafPoints(
         userId,
-        session.minutesSpent,
+        session.leafPointsSpent,
         session.operationKey,
       );
       if (!user) {
@@ -482,33 +449,26 @@ export class AppControlService {
           await this.unlockModel
             .deleteOne({ _id: session._id, debited: false })
             .exec();
-          throw new BadRequestException('Insufficient unlock minutes balance');
+          throw new BadRequestException('Insufficient Leaf Points');
         }
       }
       session.debited = true;
       await session.save();
       return (
-        user?.unlockMinutesBalance ??
-        (await this.usersService.findById(userId))?.unlockMinutesBalance ??
+        user?.leafPoints ??
+        (await this.usersService.findById(userId))?.leafPoints ??
         0
       );
     }
-    return (
-      (await this.usersService.findById(userId))?.unlockMinutesBalance ?? 0
-    );
+    return (await this.usersService.findById(userId))?.leafPoints ?? 0;
   }
 
   private assertSameUnlock(
     session: TemporaryUnlockSessionDocument,
     packageName: string,
-    minutes: number,
-    sourceUserTaskId: string,
+    optionId: string,
   ) {
-    if (
-      session.packageName !== packageName ||
-      session.minutesSpent !== minutes ||
-      session.sourceUserTask?.toString() !== sourceUserTaskId
-    ) {
+    if (session.packageName !== packageName || session.optionId !== optionId) {
       throw new ConflictException(
         'Idempotency-Key was already used for a different unlock request',
       );
@@ -517,23 +477,17 @@ export class AppControlService {
 
   private unlockResponse(
     session: TemporaryUnlockSessionDocument,
-    remainingBalance: number,
+    remainingLeafPoints: number,
     alreadyProcessed: boolean,
   ) {
     return {
       id: session._id.toString(),
-      sessionId: session._id.toString(),
       packageName: session.packageName,
       minutes: session.minutesSpent,
-      startsAt: session.startedAt,
+      leafPointsSpent: session.leafPointsSpent,
+      remainingLeafPoints,
       startedAt: session.startedAt,
       expiresAt: session.expiresAt,
-      minutesSpent: session.minutesSpent,
-      status: session.status,
-      active:
-        session.status === TemporaryUnlockStatus.ACTIVE &&
-        session.expiresAt.getTime() > Date.now(),
-      remainingBalance,
       alreadyProcessed,
     };
   }
@@ -544,10 +498,6 @@ export class AppControlService {
       packageName: rule.packageName,
       appName: rule.appName,
       enabled: rule.enabled,
-      dailyLimitMinutes: rule.dailyLimitMinutes,
-      activeDays: rule.activeDays,
-      startTime: rule.startTime,
-      endTime: rule.endTime,
       createdAt: rule.createdAt,
       updatedAt: rule.updatedAt,
     };

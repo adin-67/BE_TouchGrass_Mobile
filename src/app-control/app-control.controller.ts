@@ -28,10 +28,11 @@ import {
   AllowlistResponseDto,
   AppControlRuleListResponseDto,
   AppControlRuleResponseDto,
+  UnlockOptionsResponseDto,
   UnlockResponseDto,
   UnlockStatusResponseDto,
-  UsageSummaryResponseDto,
   UsageSummaryRecordResponseDto,
+  UsageSummaryResponseDto,
 } from './dto/app-control-response.dto';
 import { CreateAllowlistDto } from './dto/create-allowlist.dto';
 import { CreateAppControlRuleDto } from './dto/create-rule.dto';
@@ -68,6 +69,7 @@ export class AppControlController {
   }
 
   @Patch('rules/:id')
+  @ApiOperation({ summary: 'Chỉ bật hoặc tắt rule của người dùng hiện tại' })
   @ApiOkResponse({ type: AppControlRuleResponseDto })
   updateRule(
     @Req() request: AuthenticatedRequest,
@@ -105,12 +107,19 @@ export class AppControlController {
     return this.appControlService.deleteAllowlist(request.user.sub, id);
   }
 
+  @Get('unlock-options')
+  @ApiOperation({ summary: 'Lấy bảng giá mở khóa do server quản lý' })
+  @ApiOkResponse({ type: UnlockOptionsResponseDto })
+  getUnlockOptions() {
+    return this.appControlService.getUnlockOptions();
+  }
+
   @Post('unlock')
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @ApiOperation({
-    summary: 'Dùng phút thưởng để mở khóa tạm thời một package',
+    summary: 'Mua thời gian mở khóa tạm thời bằng Leaf Point',
     description:
-      'Nếu package đã có phiên còn hiệu lực, số phút mới được cộng dồn từ expiresAt hiện tại. Retry phải dùng lại cùng Idempotency-Key.',
+      'Giá và số phút được lấy từ option phía server. Nếu package đã có phiên còn hiệu lực, thời gian mới được cộng từ expiresAt hiện tại. Retry phải dùng lại cùng Idempotency-Key.',
   })
   @ApiHeader({
     name: 'Idempotency-Key',
@@ -144,7 +153,7 @@ export class AppControlController {
 
   @Post('usage-summary')
   @ApiOperation({
-    summary: 'Lưu thống kê UsageStats tổng hợp mà người dùng đồng ý đồng bộ',
+    summary: 'Lưu UsageStats tổng hợp do người dùng đồng ý đồng bộ',
   })
   @ApiCreatedResponse({ type: UsageSummaryRecordResponseDto })
   upsertUsageSummary(
@@ -161,9 +170,7 @@ export class AppControlController {
   }
 
   @Delete('data')
-  @ApiOperation({
-    summary: 'Xóa toàn bộ dữ liệu App Control của chính người dùng',
-  })
+  @ApiOperation({ summary: 'Xóa toàn bộ dữ liệu App Control của người dùng' })
   deleteAllData(@Req() request: AuthenticatedRequest) {
     return this.appControlService.deleteAllData(request.user.sub);
   }

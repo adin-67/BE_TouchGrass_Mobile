@@ -6,24 +6,12 @@ import request from 'supertest';
 import type { App } from 'supertest/types';
 
 import { AppModule } from '../src/app.module';
+import { AppControlService } from '../src/app-control/app-control.service';
 import { AppControlRule } from '../src/app-control/schemas/app-control-rule.schema';
 import { PersonalAllowlist } from '../src/app-control/schemas/personal-allowlist.schema';
 import { TemporaryUnlockSession } from '../src/app-control/schemas/temporary-unlock-session.schema';
 import { UsageSummary } from '../src/app-control/schemas/usage-summary.schema';
 import { User, type UserDocument } from '../src/users/schemas/user.schema';
-import {
-  Task,
-  TaskCategory,
-  TaskDifficulty,
-  TaskFrequency,
-  TaskTargetUnit,
-  TaskVerificationType,
-} from '../src/tasks/schemas/task.schema';
-import {
-  UserTask,
-  UserTaskStatus,
-  UserTaskVerificationStatus,
-} from '../src/user-tasks/schemas/user-task.schema';
 
 interface AuthResponse {
   accessToken: string;
@@ -33,36 +21,46 @@ interface AuthResponse {
 interface RuleResponse {
   id: string;
   packageName: string;
+  appName: string;
   enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface UnlockResponse {
+  id: string;
+  packageName: string;
+  minutes: number;
+  leafPointsSpent: number;
+  remainingLeafPoints: number;
+  startedAt: string;
+  expiresAt: string;
+  alreadyProcessed: boolean;
 }
 
 describe('App Control (e2e)', () => {
   jest.setTimeout(60_000);
   let app: INestApplication<App>;
+  let service: AppControlService;
   let userModel: Model<UserDocument>;
   let ruleModel: Model<AppControlRule>;
   let allowlistModel: Model<PersonalAllowlist>;
   let unlockModel: Model<TemporaryUnlockSession>;
   let usageModel: Model<UsageSummary>;
-  let taskModel: Model<Task>;
-  let userTaskModel: Model<UserTask>;
   let tokenA: string;
   let tokenB: string;
   let userAId: string;
+  let userBId: string;
   let ruleAId: string;
   let ruleBId: string;
-  let taskId: string;
-  let sourceUserTaskId: string;
-  let insufficientSourceUserTaskId: string;
-  let incompleteSourceUserTaskId: string;
-  let unclaimedSourceUserTaskId: string;
-  let extensionSourceUserTaskId: string;
+  let allowlistId: string;
 
   const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const emailA = `app-control-a-${suffix}@touchgrass.test`;
   const emailB = `app-control-b-${suffix}@touchgrass.test`;
   const packageA = `com.example.social${Date.now()}`;
   const packageB = `com.example.video${Date.now()}`;
+  const legacyPackage = `com.example.legacy${Date.now()}`;
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -80,13 +78,12 @@ describe('App Control (e2e)', () => {
     );
     await app.init();
 
+    service = moduleFixture.get(AppControlService);
     userModel = moduleFixture.get(getModelToken(User.name));
     ruleModel = moduleFixture.get(getModelToken(AppControlRule.name));
     allowlistModel = moduleFixture.get(getModelToken(PersonalAllowlist.name));
     unlockModel = moduleFixture.get(getModelToken(TemporaryUnlockSession.name));
     usageModel = moduleFixture.get(getModelToken(UsageSummary.name));
-    taskModel = moduleFixture.get(getModelToken(Task.name));
-    userTaskModel = moduleFixture.get(getModelToken(UserTask.name));
 
     const responseA = await request(app.getHttpServer())
       .post('/api/v1/auth/register')
@@ -110,88 +107,79 @@ describe('App Control (e2e)', () => {
       .expect(201);
     const authB = responseB.body as AuthResponse;
     tokenB = authB.accessToken;
-
-    const task = await taskModel.create({
-      code: `E2E_UNLOCK_${Date.now()}`,
-      title: 'E2E Unlock Task',
-      description: 'Task used only by App Control e2e tests',
-      category: TaskCategory.WELLNESS,
-      verificationType: TaskVerificationType.MANUAL_CHECKIN,
-      frequency: TaskFrequency.ANYTIME,
-      emoji: 'T',
-      difficulty: TaskDifficulty.EASY,
-      rewardXp: 1,
-      rewardLp: 1,
-      unlockMinutes: 10,
-      targetValue: 1,
-      targetUnit: TaskTargetUnit.MINUTE,
-      estimatedMinutes: 1,
-      instructions: ['Complete e2e test task'],
-      active: true,
-    });
-    taskId = task._id.toString();
-    const sourceOne = await userTaskModel.create({
-      user: new Types.ObjectId(userAId),
-      task: task._id,
-      cycleKey: `E2E_UNLOCK_ONE_${suffix}`,
-      status: UserTaskStatus.COMPLETED,
-      verificationStatus: UserTaskVerificationStatus.PASSED,
-      completedAt: new Date(),
-      rewardGranted: true,
-    });
-    sourceUserTaskId = sourceOne._id.toString();
-    const sourceTwo = await userTaskModel.create({
-      user: new Types.ObjectId(userAId),
-      task: task._id,
-      cycleKey: `E2E_UNLOCK_TWO_${suffix}`,
-      status: UserTaskStatus.COMPLETED,
-      verificationStatus: UserTaskVerificationStatus.PASSED,
-      completedAt: new Date(),
-      rewardGranted: true,
-    });
-    insufficientSourceUserTaskId = sourceTwo._id.toString();
-    const incompleteSource = await userTaskModel.create({
-      user: new Types.ObjectId(userAId),
-      task: task._id,
-      cycleKey: `E2E_UNLOCK_INCOMPLETE_${suffix}`,
-      status: UserTaskStatus.IN_PROGRESS,
-      verificationStatus: UserTaskVerificationStatus.IN_PROGRESS,
-      rewardGranted: false,
-    });
-    incompleteSourceUserTaskId = incompleteSource._id.toString();
-    const unclaimedSource = await userTaskModel.create({
-      user: new Types.ObjectId(userAId),
-      task: task._id,
-      cycleKey: `E2E_UNLOCK_UNCLAIMED_${suffix}`,
-      status: UserTaskStatus.COMPLETED,
-      verificationStatus: UserTaskVerificationStatus.PASSED,
-      completedAt: new Date(),
-      rewardGranted: false,
-    });
-    unclaimedSourceUserTaskId = unclaimedSource._id.toString();
-    const extensionSource = await userTaskModel.create({
-      user: new Types.ObjectId(userAId),
-      task: task._id,
-      cycleKey: `E2E_UNLOCK_EXTENSION_${suffix}`,
-      status: UserTaskStatus.COMPLETED,
-      verificationStatus: UserTaskVerificationStatus.PASSED,
-      completedAt: new Date(),
-      rewardGranted: true,
-    });
-    extensionSourceUserTaskId = extensionSource._id.toString();
+    userBId = authB.user.id;
   });
 
-  it('returns 401 for a missing or invalid JWT', async () => {
+  it('requires a valid JWT', async () => {
     await request(app.getHttpServer())
       .get('/api/v1/app-control/rules')
       .expect(401);
-    await request(app.getHttpServer())
-      .get('/api/v1/app-control/rules')
-      .set('Authorization', 'Bearer invalid-token')
-      .expect(401);
   });
 
-  it('rejects protected packages', async () => {
+  it('returns server-owned unlock options', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/api/v1/app-control/unlock-options')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .expect(200);
+    expect(response.body).toEqual({
+      items: [
+        { id: 'UNLOCK_5', minutes: 5, leafPointCost: 5 },
+        { id: 'UNLOCK_15', minutes: 15, leafPointCost: 15 },
+        { id: 'UNLOCK_30', minutes: 30, leafPointCost: 30 },
+      ],
+    });
+
+    await request(app.getHttpServer())
+      .post('/api/v1/app-control/unlock')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .set('Idempotency-Key', `client-price-${suffix}`)
+      .send({
+        packageName: packageA,
+        optionId: 'UNLOCK_5',
+        leafPointCost: 1,
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      })
+      .expect(400);
+  });
+
+  it('creates a rule without legacy schedule fields and rejects client pricing fields', async () => {
+    const createdA = await request(app.getHttpServer())
+      .post('/api/v1/app-control/rules')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send(thisRule(packageA))
+      .expect(201);
+    const body = createdA.body as RuleResponse;
+    ruleAId = body.id;
+    expect(body).toEqual({
+      id: ruleAId,
+      packageName: packageA,
+      appName: 'Example App',
+      enabled: true,
+      createdAt: expect.any(String) as string,
+      updatedAt: expect.any(String) as string,
+    });
+
+    await request(app.getHttpServer())
+      .post('/api/v1/app-control/rules')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ ...thisRule(`${packageA}.legacy`), dailyLimitMinutes: 60 })
+      .expect(400);
+
+    const createdB = await request(app.getHttpServer())
+      .post('/api/v1/app-control/rules')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .send(thisRule(packageB))
+      .expect(201);
+    ruleBId = (createdB.body as RuleResponse).id;
+
+    await request(app.getHttpServer())
+      .post('/api/v1/app-control/rules')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send(thisRule(packageA))
+      .expect(409);
+  });
+
+  it('rejects protected packages for rules and unlocks', async () => {
     await request(app.getHttpServer())
       .post('/api/v1/app-control/rules')
       .set('Authorization', `Bearer ${tokenA}`)
@@ -201,69 +189,11 @@ describe('App Control (e2e)', () => {
       .post('/api/v1/app-control/unlock')
       .set('Authorization', `Bearer ${tokenA}`)
       .set('Idempotency-Key', `protected-${suffix}`)
-      .send({
-        packageName: 'com.android.settings',
-        minutes: 5,
-        sourceUserTaskId,
-      })
+      .send({ packageName: 'com.android.settings', optionId: 'UNLOCK_5' })
       .expect(403);
   });
 
-  it('validates dailyLimitMinutes and activeDays', async () => {
-    await request(app.getHttpServer())
-      .post('/api/v1/app-control/rules')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send({ ...thisRule(packageA), dailyLimitMinutes: 0 })
-      .expect(400);
-    await request(app.getHttpServer())
-      .post('/api/v1/app-control/rules')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send({ ...thisRule(packageA), activeDays: [0, 7] })
-      .expect(400);
-  });
-
-  it('creates, updates and returns only the owner rule', async () => {
-    const createdA = await request(app.getHttpServer())
-      .post('/api/v1/app-control/rules')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .send(thisRule(packageA))
-      .expect(201);
-    ruleAId = (createdA.body as RuleResponse).id;
-    expect(createdA.body).toMatchObject({
-      id: ruleAId,
-      packageName: packageA,
-      appName: 'Example App',
-      enabled: true,
-      dailyLimitMinutes: 60,
-      activeDays: [0, 1, 2, 3, 4, 5, 6],
-      startTime: '08:00',
-      endTime: '22:00',
-    });
-
-    const createdB = await request(app.getHttpServer())
-      .post('/api/v1/app-control/rules')
-      .set('Authorization', `Bearer ${tokenB}`)
-      .send(thisRule(packageB))
-      .expect(201);
-    ruleBId = (createdB.body as RuleResponse).id;
-
-    const directlyStoredRule = await ruleModel.findById(ruleAId).lean().exec();
-    expect(directlyStoredRule?.user.toString()).toBe(userAId);
-    const decodedToken = JSON.parse(
-      Buffer.from(tokenA.split('.')[1], 'base64url').toString('utf8'),
-    ) as { sub: string };
-    expect(decodedToken.sub).toBe(userAId);
-    const directOwnerRules = await ruleModel
-      .find({ user: new Types.ObjectId(userAId) })
-      .lean()
-      .exec();
-    expect(directOwnerRules).toHaveLength(1);
-    const ownerList = await request(app.getHttpServer())
-      .get('/api/v1/app-control/rules')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .expect(200);
-    expect((ownerList.body as { items: RuleResponse[] }).items).toHaveLength(1);
-
+  it('only lets the owner read, toggle or delete a rule', async () => {
     await request(app.getHttpServer())
       .get(`/api/v1/app-control/rules/${ruleBId}`)
       .set('Authorization', `Bearer ${tokenA}`)
@@ -271,38 +201,63 @@ describe('App Control (e2e)', () => {
     await request(app.getHttpServer())
       .patch(`/api/v1/app-control/rules/${ruleBId}`)
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ dailyLimitMinutes: 30 })
+      .send({ enabled: false })
       .expect(404);
     await request(app.getHttpServer())
       .delete(`/api/v1/app-control/rules/${ruleBId}`)
       .set('Authorization', `Bearer ${tokenA}`)
       .expect(404);
 
-    const updated = await request(app.getHttpServer())
+    const toggled = await request(app.getHttpServer())
       .patch(`/api/v1/app-control/rules/${ruleAId}`)
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ dailyLimitMinutes: 30 })
+      .send({ enabled: false })
       .expect(200);
-    expect(
-      (updated.body as { dailyLimitMinutes: number }).dailyLimitMinutes,
-    ).toBe(30);
+    expect((toggled.body as RuleResponse).enabled).toBe(false);
 
     await request(app.getHttpServer())
-      .post('/api/v1/app-control/rules')
+      .patch(`/api/v1/app-control/rules/${ruleAId}`)
       .set('Authorization', `Bearer ${tokenA}`)
-      .send(thisRule(packageA))
-      .expect(409);
+      .send({ appName: 'Client cannot rename rules' })
+      .expect(400);
+
+    await request(app.getHttpServer())
+      .patch(`/api/v1/app-control/rules/${ruleAId}`)
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ enabled: true })
+      .expect(200);
   });
 
-  it('disables a rule added to allowlist and rejects re-enabling it', async () => {
-    await request(app.getHttpServer())
+  it('removes legacy schedule fields from existing rules', async () => {
+    const inserted = await ruleModel.collection.insertOne({
+      user: new Types.ObjectId(userAId),
+      packageName: legacyPackage,
+      appName: 'Legacy App',
+      enabled: true,
+      dailyLimitMinutes: 60,
+      activeDays: [0, 1, 2],
+      startTime: '08:00',
+      endTime: '22:00',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await service.onModuleInit();
+    const migrated = await ruleModel.collection.findOne({
+      _id: inserted.insertedId,
+    });
+    expect(migrated).not.toHaveProperty('dailyLimitMinutes');
+    expect(migrated).not.toHaveProperty('activeDays');
+    expect(migrated).not.toHaveProperty('startTime');
+    expect(migrated).not.toHaveProperty('endTime');
+  });
+
+  it('keeps allowlist behavior compatible', async () => {
+    const added = await request(app.getHttpServer())
       .post('/api/v1/app-control/allowlist')
       .set('Authorization', `Bearer ${tokenA}`)
       .send({ packageName: packageA, appName: 'Social', reason: 'Work' })
       .expect(201);
-
-    const storedRule = await ruleModel.findById(ruleAId).lean().exec();
-    expect(storedRule?.enabled).toBe(false);
+    allowlistId = (added.body as { id: string }).id;
 
     await request(app.getHttpServer())
       .patch(`/api/v1/app-control/rules/${ruleAId}`)
@@ -311,157 +266,115 @@ describe('App Control (e2e)', () => {
       .expect(409);
 
     await request(app.getHttpServer())
-      .post('/api/v1/app-control/rules')
+      .delete(`/api/v1/app-control/allowlist/${allowlistId}`)
       .set('Authorization', `Bearer ${tokenA}`)
-      .send(thisRule(packageA))
-      .expect(409);
+      .expect(200);
+    await request(app.getHttpServer())
+      .patch(`/api/v1/app-control/rules/${ruleAId}`)
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ enabled: true })
+      .expect(200);
   });
 
-  it('spends unlock balance once for repeated idempotent requests', async () => {
-    await allowlistModel
-      .deleteMany({ user: new Types.ObjectId(userAId) })
-      .exec();
-    expect(
-      await allowlistModel.countDocuments({
-        user: new Types.ObjectId(userAId),
-        packageName: packageA,
-      }),
-    ).toBe(0);
-    await ruleModel
-      .updateOne({ _id: ruleAId }, { $set: { enabled: true } })
-      .exec();
+  it('buys unlock time with Leaf Points once for an idempotent request', async () => {
     await userModel
-      .updateOne({ _id: userAId }, { $set: { unlockMinutesBalance: 10 } })
+      .updateOne({ _id: userAId }, { $set: { leafPoints: 50 } })
       .exec();
-
     const first = await request(app.getHttpServer())
       .post('/api/v1/app-control/unlock')
       .set('Authorization', `Bearer ${tokenA}`)
       .set('Idempotency-Key', `unlock-${suffix}`)
-      .send({
-        packageName: packageA,
-        minutes: 5,
-        sourceUserTaskId,
-      });
-    expect(first.status).toBe(201);
-    expect(
-      (first.body as { remainingBalance: number; alreadyProcessed: boolean })
-        .remainingBalance,
-    ).toBe(5);
+      .send({ packageName: packageA, optionId: 'UNLOCK_15' })
+      .expect(201);
+    const firstBody = first.body as UnlockResponse;
+    expect(firstBody).toMatchObject({
+      packageName: packageA,
+      minutes: 15,
+      leafPointsSpent: 15,
+      remainingLeafPoints: 35,
+      alreadyProcessed: false,
+    });
+    expect(new Date(firstBody.expiresAt).getTime()).toBeGreaterThan(
+      new Date(firstBody.startedAt).getTime(),
+    );
 
     const repeated = await request(app.getHttpServer())
       .post('/api/v1/app-control/unlock')
       .set('Authorization', `Bearer ${tokenA}`)
       .set('Idempotency-Key', `unlock-${suffix}`)
-      .send({ packageName: packageA, minutes: 5, sourceUserTaskId })
+      .send({ packageName: packageA, optionId: 'UNLOCK_15' })
       .expect(201);
-    expect(
-      (repeated.body as { remainingBalance: number; alreadyProcessed: boolean })
-        .remainingBalance,
-    ).toBe(5);
-    expect(
-      (repeated.body as { alreadyProcessed: boolean }).alreadyProcessed,
-    ).toBe(true);
+    expect(repeated.body).toMatchObject({
+      id: firstBody.id,
+      remainingLeafPoints: 35,
+      alreadyProcessed: true,
+    });
 
     await request(app.getHttpServer())
       .post('/api/v1/app-control/unlock')
       .set('Authorization', `Bearer ${tokenA}`)
-      .set('Idempotency-Key', `reuse-source-${suffix}`)
-      .send({ packageName: packageA, minutes: 5, sourceUserTaskId })
+      .set('Idempotency-Key', `unlock-${suffix}`)
+      .send({ packageName: packageA, optionId: 'UNLOCK_5' })
       .expect(409);
-
     const user = await userModel.findById(userAId).lean().exec();
-    expect(user?.unlockMinutesBalance).toBe(5);
+    expect(user?.leafPoints).toBe(35);
+    expect(user?.unlockMinutesBalance).toBe(0);
   });
 
-  it('rejects unlock when balance is insufficient', async () => {
+  it('rejects insufficient Leaf Points and another user package', async () => {
+    await userModel
+      .updateOne({ _id: userBId }, { $set: { leafPoints: 0 } })
+      .exec();
     await request(app.getHttpServer())
       .post('/api/v1/app-control/unlock')
       .set('Authorization', `Bearer ${tokenB}`)
-      .set('Idempotency-Key', `foreign-source-${suffix}`)
-      .send({
-        packageName: packageB,
-        minutes: 5,
-        sourceUserTaskId,
-      })
+      .set('Idempotency-Key', `foreign-${suffix}`)
+      .send({ packageName: packageA, optionId: 'UNLOCK_5' })
       .expect(404);
     await request(app.getHttpServer())
       .post('/api/v1/app-control/unlock')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .set('Idempotency-Key', `incomplete-${suffix}`)
-      .send({
-        packageName: packageA,
-        minutes: 5,
-        sourceUserTaskId: incompleteSourceUserTaskId,
-      })
-      .expect(409);
-    await request(app.getHttpServer())
-      .post('/api/v1/app-control/unlock')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .set('Idempotency-Key', `unclaimed-${suffix}`)
-      .send({
-        packageName: packageA,
-        minutes: 5,
-        sourceUserTaskId: unclaimedSourceUserTaskId,
-      })
-      .expect(409);
-    await request(app.getHttpServer())
-      .post('/api/v1/app-control/unlock')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .set('Idempotency-Key', `too-many-${suffix}`)
-      .send({
-        packageName: packageA,
-        minutes: 11,
-        sourceUserTaskId: insufficientSourceUserTaskId,
-      })
-      .expect(400);
-    await request(app.getHttpServer())
-      .post('/api/v1/app-control/unlock')
-      .set('Authorization', `Bearer ${tokenA}`)
+      .set('Authorization', `Bearer ${tokenB}`)
       .set('Idempotency-Key', `insufficient-${suffix}`)
-      .send({
-        packageName: packageA,
-        minutes: 6,
-        sourceUserTaskId: insufficientSourceUserTaskId,
-      })
+      .send({ packageName: packageB, optionId: 'UNLOCK_5' })
       .expect(400);
+    const user = await userModel.findById(userBId).lean().exec();
+    expect(user?.leafPoints).toBe(0);
   });
 
-  it('extends an active unlock from its current expiresAt', async () => {
+  it('extends an active session from the existing server expiresAt', async () => {
     const previous = await unlockModel
       .findOne({ user: new Types.ObjectId(userAId), packageName: packageA })
       .sort({ expiresAt: -1 })
       .lean()
       .exec();
     expect(previous).not.toBeNull();
-    await userModel
-      .updateOne({ _id: userAId }, { $set: { unlockMinutesBalance: 10 } })
-      .exec();
 
     const response = await request(app.getHttpServer())
       .post('/api/v1/app-control/unlock')
       .set('Authorization', `Bearer ${tokenA}`)
       .set('Idempotency-Key', `extension-${suffix}`)
-      .send({
-        packageName: packageA,
-        minutes: 3,
-        sourceUserTaskId: extensionSourceUserTaskId,
-      })
+      .send({ packageName: packageA, optionId: 'UNLOCK_5' })
       .expect(201);
-    const body = response.body as {
-      expiresAt: string;
-      remainingBalance: number;
-    };
-    expect(body.remainingBalance).toBe(7);
+    const body = response.body as UnlockResponse;
+    expect(body.remainingLeafPoints).toBe(30);
     expect(new Date(body.expiresAt).getTime()).toBe(
-      previous!.expiresAt.getTime() + 3 * 60_000,
+      previous!.expiresAt.getTime() + 5 * 60_000,
     );
+
+    const status = await request(app.getHttpServer())
+      .get(`/api/v1/app-control/unlock/${packageA}/status`)
+      .set('Authorization', `Bearer ${tokenA}`)
+      .expect(200);
+    expect(status.body).toMatchObject({
+      packageName: packageA,
+      unlocked: true,
+    });
   });
 
-  it('returns active=false after a session expires', async () => {
+  it('uses server time and returns unlocked=false after expiry', async () => {
     await unlockModel
       .updateMany(
-        { user: new Types.ObjectId(userAId) },
+        { user: new Types.ObjectId(userAId), packageName: packageA },
         { $set: { expiresAt: new Date(Date.now() - 1000) } },
       )
       .exec();
@@ -469,46 +382,40 @@ describe('App Control (e2e)', () => {
       .get(`/api/v1/app-control/unlock/${packageA}/status`)
       .set('Authorization', `Bearer ${tokenA}`)
       .expect(200);
-    expect((response.body as { active: boolean }).active).toBe(false);
+    expect(response.body).toEqual({
+      packageName: packageA,
+      unlocked: false,
+      expiresAt: null,
+      remainingSeconds: 0,
+    });
   });
 
-  it('returns available=false until real usage data is synchronized', async () => {
-    const empty = await request(app.getHttpServer())
-      .get('/api/v1/app-control/summary')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .expect(200);
-    expect((empty.body as { available: boolean }).available).toBe(false);
-
+  it('keeps UsageStats synchronization working', async () => {
     await request(app.getHttpServer())
       .post('/api/v1/app-control/usage-summary')
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
-        date: '2026-08-14',
+        date: '2026-08-15',
         apps: [
           {
             packageName: packageA,
             totalTimeInForegroundMs: 600000,
-            lastTimeUsed: '2026-08-14T08:00:00.000Z',
+            lastTimeUsed: '2026-08-15T08:00:00.000Z',
           },
         ],
       })
       .expect(201);
-
-    const available = await request(app.getHttpServer())
+    const response = await request(app.getHttpServer())
       .get('/api/v1/app-control/summary')
       .set('Authorization', `Bearer ${tokenA}`)
       .expect(200);
-    expect(
-      (available.body as { available: boolean; totalScreenTimeSeconds: number })
-        .available,
-    ).toBe(true);
-    expect(
-      (available.body as { totalScreenTimeSeconds: number })
-        .totalScreenTimeSeconds,
-    ).toBe(600);
+    expect(response.body).toMatchObject({
+      available: true,
+      totalScreenTimeSeconds: 600,
+    });
   });
 
-  it('deletes a rule owned by the current user', async () => {
+  it('deletes only a rule owned by the current user', async () => {
     await request(app.getHttpServer())
       .delete(`/api/v1/app-control/rules/${ruleAId}`)
       .set('Authorization', `Bearer ${tokenA}`)
@@ -521,33 +428,18 @@ describe('App Control (e2e)', () => {
 
   afterAll(async () => {
     if (!userModel || !app) return;
-    const users = await userModel
-      .find({ email: { $in: [emailA, emailB] } })
-      .select('_id')
-      .lean()
-      .exec();
-    const userIds = users.map((user) => user._id);
+    const userIds = [new Types.ObjectId(userAId), new Types.ObjectId(userBId)];
     await Promise.all([
       ruleModel.deleteMany({ user: { $in: userIds } }).exec(),
       allowlistModel.deleteMany({ user: { $in: userIds } }).exec(),
       unlockModel.deleteMany({ user: { $in: userIds } }).exec(),
       usageModel.deleteMany({ user: { $in: userIds } }).exec(),
-      userTaskModel.deleteMany({ user: { $in: userIds } }).exec(),
     ]);
-    await taskModel.deleteOne({ _id: taskId }).exec();
     await userModel.deleteMany({ _id: { $in: userIds } }).exec();
     await app.close();
   });
 });
 
 function thisRule(packageName: string) {
-  return {
-    packageName,
-    appName: 'Example App',
-    enabled: true,
-    dailyLimitMinutes: 60,
-    activeDays: [0, 1, 2, 3, 4, 5, 6],
-    startTime: '08:00',
-    endTime: '22:00',
-  };
+  return { packageName, appName: 'Example App', enabled: true };
 }

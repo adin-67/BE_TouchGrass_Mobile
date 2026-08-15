@@ -37,6 +37,12 @@ export class TemporaryUnlockSession {
   @Prop({ required: true, min: 1, max: 1440 })
   minutesSpent!: number;
 
+  @Prop({ type: String, default: null })
+  optionId!: string | null;
+
+  @Prop({ type: Number, default: 0, min: 0 })
+  leafPointsSpent!: number;
+
   @Prop({ type: Types.ObjectId, ref: UserTask.name, default: null })
   sourceUserTask!: Types.ObjectId | null;
 

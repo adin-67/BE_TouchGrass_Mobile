@@ -2,11 +2,6 @@ import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 
 import { UsersModule } from '../users/users.module';
-import { TasksModule } from '../tasks/tasks.module';
-import {
-  UserTask,
-  UserTaskSchema,
-} from '../user-tasks/schemas/user-task.schema';
 import { AppControlController } from './app-control.controller';
 import { AppControlService } from './app-control.service';
 import {
@@ -36,10 +31,8 @@ import {
         schema: TemporaryUnlockSessionSchema,
       },
       { name: UsageSummary.name, schema: UsageSummarySchema },
-      { name: UserTask.name, schema: UserTaskSchema },
     ]),
     UsersModule,
-    TasksModule,
   ],
   controllers: [AppControlController],
   providers: [AppControlService],

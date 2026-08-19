@@ -26,7 +26,7 @@ import { AppControlModule } from './app-control/app-control.module';
           .pattern(/^mongodb(\+srv)?:\/\//)
           .required(),
 
-        JWT_ACCESS_SECRET: Joi.string().required(),
+        JWT_ACCESS_SECRET: Joi.string().min(32).required(),
         JWT_ACCESS_EXPIRES_IN: Joi.string().required(),
 
         PASSWORD_RESET_TTL_MINUTES: Joi.number()

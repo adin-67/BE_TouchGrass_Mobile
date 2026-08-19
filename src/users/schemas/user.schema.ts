@@ -104,6 +104,12 @@ export class User {
   unlockMinutesBalance!: number;
 
   @Prop({
+    default: 0,
+    min: 0,
+  })
+  passwordResetVersion!: number;
+
+  @Prop({
     type: [Types.ObjectId],
     ref: 'UserTask',
     default: [],

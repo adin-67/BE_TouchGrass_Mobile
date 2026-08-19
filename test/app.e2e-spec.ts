@@ -6,12 +6,12 @@ import request from 'supertest';
 import type { App } from 'supertest/types';
 
 import { AppModule } from '../src/app.module';
-import { AppControlService } from '../src/app-control/app-control.service';
 import { AppControlRule } from '../src/app-control/schemas/app-control-rule.schema';
 import { PersonalAllowlist } from '../src/app-control/schemas/personal-allowlist.schema';
 import { TemporaryUnlockSession } from '../src/app-control/schemas/temporary-unlock-session.schema';
 import { UsageSummary } from '../src/app-control/schemas/usage-summary.schema';
 import { User, type UserDocument } from '../src/users/schemas/user.schema';
+import { removeLegacyAppControlRuleFields } from '../src/migrations/app-control-rule.migration';
 
 interface AuthResponse {
   accessToken: string;
@@ -41,7 +41,6 @@ interface UnlockResponse {
 describe('App Control (e2e)', () => {
   jest.setTimeout(60_000);
   let app: INestApplication<App>;
-  let service: AppControlService;
   let userModel: Model<UserDocument>;
   let ruleModel: Model<AppControlRule>;
   let allowlistModel: Model<PersonalAllowlist>;
@@ -78,7 +77,6 @@ describe('App Control (e2e)', () => {
     );
     await app.init();
 
-    service = moduleFixture.get(AppControlService);
     userModel = moduleFixture.get(getModelToken(User.name));
     ruleModel = moduleFixture.get(getModelToken(AppControlRule.name));
     allowlistModel = moduleFixture.get(getModelToken(PersonalAllowlist.name));
@@ -140,6 +138,17 @@ describe('App Control (e2e)', () => {
         expiresAt: '2099-01-01T00:00:00.000Z',
       })
       .expect(400);
+  });
+
+  it('returns the backend-owned protected package catalog', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/api/v1/app-control/protected-packages')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .expect(200);
+    const body = response.body as { items: string[] };
+    expect(body.items).toEqual(
+      expect.arrayContaining(['com.touchgrassmobile', 'com.android.settings']),
+    );
   });
 
   it('creates a rule without legacy schedule fields and rejects client pricing fields', async () => {
@@ -241,7 +250,7 @@ describe('App Control (e2e)', () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
-    await service.onModuleInit();
+    await removeLegacyAppControlRuleFields(ruleModel);
     const migrated = await ruleModel.collection.findOne({
       _id: inserted.insertedId,
     });
@@ -369,6 +378,41 @@ describe('App Control (e2e)', () => {
       packageName: packageA,
       unlocked: true,
     });
+  });
+
+  it('serializes concurrent unlock purchases without losing paid time', async () => {
+    const previous = await unlockModel
+      .findOne({ user: new Types.ObjectId(userAId), packageName: packageA })
+      .sort({ expiresAt: -1 })
+      .lean()
+      .exec();
+    expect(previous).not.toBeNull();
+
+    const [first, second] = await Promise.all([
+      request(app.getHttpServer())
+        .post('/api/v1/app-control/unlock')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .set('Idempotency-Key', `concurrent-a-${suffix}`)
+        .send({ packageName: packageA, optionId: 'UNLOCK_5' }),
+      request(app.getHttpServer())
+        .post('/api/v1/app-control/unlock')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .set('Idempotency-Key', `concurrent-b-${suffix}`)
+        .send({ packageName: packageA, optionId: 'UNLOCK_5' }),
+    ]);
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+
+    const latest = await unlockModel
+      .findOne({ user: new Types.ObjectId(userAId), packageName: packageA })
+      .sort({ expiresAt: -1 })
+      .lean()
+      .exec();
+    expect(latest?.expiresAt.getTime()).toBe(
+      previous!.expiresAt.getTime() + 10 * 60_000,
+    );
+    const user = await userModel.findById(userAId).lean().exec();
+    expect(user?.leafPoints).toBe(20);
   });
 
   it('uses server time and returns unlocked=false after expiry', async () => {

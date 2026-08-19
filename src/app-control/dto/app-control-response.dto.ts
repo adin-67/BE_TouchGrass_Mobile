@@ -48,6 +48,14 @@ export class UnlockOptionsResponseDto {
   items!: UnlockOptionResponseDto[];
 }
 
+export class ProtectedPackagesResponseDto {
+  @ApiProperty({
+    type: [String],
+    example: ['com.android.settings', 'com.touchgrassmobile'],
+  })
+  items!: string[];
+}
+
 export class UnlockStatusResponseDto {
   @ApiProperty() packageName!: string;
   @ApiProperty() unlocked!: boolean;

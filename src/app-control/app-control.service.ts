@@ -4,10 +4,10 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
-  OnModuleInit,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { isValidObjectId, Model, Types } from 'mongoose';
+import { randomUUID } from 'node:crypto';
 
 import { UsersService } from '../users/users.service';
 import type { CreateAllowlistDto } from './dto/create-allowlist.dto';
@@ -15,7 +15,7 @@ import type { CreateAppControlRuleDto } from './dto/create-rule.dto';
 import type { CreateTemporaryUnlockDto } from './dto/create-unlock.dto';
 import type { UpdateAppControlRuleDto } from './dto/update-rule.dto';
 import type { UpsertUsageSummaryDto } from './dto/usage-summary.dto';
-import { isProtectedPackage } from './protected-packages';
+import { isProtectedPackage, PROTECTED_PACKAGES } from './protected-packages';
 import { getUnlockOption, UNLOCK_OPTIONS } from './unlock-options';
 import {
   AppControlRule,
@@ -34,9 +34,13 @@ import {
   UsageSummary,
   type UsageSummaryDocument,
 } from './schemas/usage-summary.schema';
+import {
+  AppControlLock,
+  type AppControlLockDocument,
+} from './schemas/app-control-lock.schema';
 
 @Injectable()
-export class AppControlService implements OnModuleInit {
+export class AppControlService {
   constructor(
     @InjectModel(AppControlRule.name)
     private readonly ruleModel: Model<AppControlRuleDocument>,
@@ -46,25 +50,17 @@ export class AppControlService implements OnModuleInit {
     private readonly unlockModel: Model<TemporaryUnlockSessionDocument>,
     @InjectModel(UsageSummary.name)
     private readonly usageModel: Model<UsageSummaryDocument>,
+    @InjectModel(AppControlLock.name)
+    private readonly lockModel: Model<AppControlLockDocument>,
     private readonly usersService: UsersService,
   ) {}
 
-  async onModuleInit(): Promise<void> {
-    await this.ruleModel.collection.updateMany(
-      {},
-      {
-        $unset: {
-          dailyLimitMinutes: '',
-          activeDays: '',
-          startTime: '',
-          endTime: '',
-        },
-      },
-    );
-  }
-
   getUnlockOptions() {
     return { items: UNLOCK_OPTIONS.map((option) => ({ ...option })) };
+  }
+
+  getProtectedPackages() {
+    return { items: [...PROTECTED_PACKAGES].sort() };
   }
 
   async listRules(userId: string) {
@@ -216,58 +212,65 @@ export class AppControlService implements OnModuleInit {
         'Enabled app control rule not found for this package',
       );
     const option = getUnlockOption(dto.optionId);
+    const lockToken = await this.acquireUnlockLock(userId, packageName);
 
-    let session = await this.unlockModel
-      .findOne({ user: this.userObjectId(userId), operationKey: key })
-      .select('+debited')
-      .exec();
-    if (session) {
-      this.assertSameUnlock(session, packageName, option.id);
-      const balance = await this.ensureDebited(userId, session);
-      return this.unlockResponse(session, balance, true);
-    }
-
-    const now = new Date();
-    const currentActiveSession = await this.unlockModel
-      .findOne({
-        user: this.userObjectId(userId),
-        packageName,
-        status: TemporaryUnlockStatus.ACTIVE,
-        expiresAt: { $gt: now },
-        debited: true,
-      })
-      .sort({ expiresAt: -1 })
-      .lean()
-      .exec();
-    const extensionBase = currentActiveSession?.expiresAt ?? now;
     try {
-      session = await this.unlockModel.create({
-        user: new Types.ObjectId(userId),
-        packageName,
-        startedAt: now,
-        expiresAt: new Date(extensionBase.getTime() + option.minutes * 60_000),
-        minutesSpent: option.minutes,
-        optionId: option.id,
-        leafPointsSpent: option.leafPointCost,
-        sourceUserTask: null,
-        status: TemporaryUnlockStatus.ACTIVE,
-        operationKey: key,
-        debited: false,
-      });
-    } catch (error: unknown) {
-      if (!this.isDuplicateKeyError(error)) throw error;
-      session = await this.unlockModel
+      let session = await this.unlockModel
         .findOne({ user: this.userObjectId(userId), operationKey: key })
         .select('+debited')
         .exec();
-      if (!session) {
-        throw new ConflictException('Unlock request could not be created');
+      if (session) {
+        this.assertSameUnlock(session, packageName, option.id);
+        const balance = await this.ensureDebited(userId, session);
+        return this.unlockResponse(session, balance, true);
       }
-      this.assertSameUnlock(session, packageName, option.id);
-    }
 
-    const balance = await this.ensureDebited(userId, session);
-    return this.unlockResponse(session, balance, false);
+      const now = new Date();
+      const currentActiveSession = await this.unlockModel
+        .findOne({
+          user: this.userObjectId(userId),
+          packageName,
+          status: TemporaryUnlockStatus.ACTIVE,
+          expiresAt: { $gt: now },
+          debited: true,
+        })
+        .sort({ expiresAt: -1 })
+        .lean()
+        .exec();
+      const extensionBase = currentActiveSession?.expiresAt ?? now;
+      try {
+        session = await this.unlockModel.create({
+          user: new Types.ObjectId(userId),
+          packageName,
+          startedAt: now,
+          expiresAt: new Date(
+            extensionBase.getTime() + option.minutes * 60_000,
+          ),
+          minutesSpent: option.minutes,
+          optionId: option.id,
+          leafPointsSpent: option.leafPointCost,
+          sourceUserTask: null,
+          status: TemporaryUnlockStatus.ACTIVE,
+          operationKey: key,
+          debited: false,
+        });
+      } catch (error: unknown) {
+        if (!this.isDuplicateKeyError(error)) throw error;
+        session = await this.unlockModel
+          .findOne({ user: this.userObjectId(userId), operationKey: key })
+          .select('+debited')
+          .exec();
+        if (!session) {
+          throw new ConflictException('Unlock request could not be created');
+        }
+        this.assertSameUnlock(session, packageName, option.id);
+      }
+
+      const balance = await this.ensureDebited(userId, session);
+      return this.unlockResponse(session, balance, false);
+    } finally {
+      await this.releaseUnlockLock(userId, packageName, lockToken);
+    }
   }
 
   async getUnlockStatus(userId: string, rawPackageName: string) {
@@ -461,6 +464,58 @@ export class AppControlService implements OnModuleInit {
       );
     }
     return (await this.usersService.findById(userId))?.leafPoints ?? 0;
+  }
+
+  private async acquireUnlockLock(
+    userId: string,
+    packageName: string,
+  ): Promise<string> {
+    const lockToken = randomUUID();
+    const deadline = Date.now() + 5_000;
+    const user = this.userObjectId(userId);
+    while (Date.now() < deadline) {
+      const now = new Date();
+      try {
+        const lock = await this.lockModel
+          .findOneAndUpdate(
+            {
+              user,
+              packageName,
+              $or: [
+                { lockedUntil: { $lte: now } },
+                { lockToken },
+                { lockedUntil: { $exists: false } },
+              ],
+            },
+            {
+              $set: {
+                lockToken,
+                lockedUntil: new Date(now.getTime() + 30_000),
+              },
+              $setOnInsert: { user, packageName },
+            },
+            { upsert: true, returnDocument: 'after' },
+          )
+          .exec();
+        if (lock?.lockToken === lockToken) return lockToken;
+      } catch (error: unknown) {
+        if (!this.isDuplicateKeyError(error)) throw error;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    }
+    throw new ConflictException(
+      'Another unlock request is being processed; retry shortly',
+    );
+  }
+
+  private async releaseUnlockLock(
+    userId: string,
+    packageName: string,
+    lockToken: string,
+  ): Promise<void> {
+    await this.lockModel
+      .deleteOne({ user: this.userObjectId(userId), packageName, lockToken })
+      .exec();
   }
 
   private assertSameUnlock(

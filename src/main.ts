@@ -5,8 +5,13 @@ import { AppModule } from './app.module';
 import { ConfigService } from '@nestjs/config';
 
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import helmet from 'helmet';
+
+import { RequestLoggingInterceptor } from './common/interceptors/request-logging.interceptor';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  app.use(helmet());
+  app.useGlobalInterceptors(new RequestLoggingInterceptor());
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,

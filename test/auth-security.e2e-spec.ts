@@ -27,6 +27,7 @@ describe('Password reset security (e2e)', () => {
   const email = `reset-${suffix}@touchgrass.test`;
   const unknownEmail = `unknown-${suffix}@touchgrass.test`;
   const limitedEmail = `limited-${suffix}@touchgrass.test`;
+  const concurrentLimitedEmail = `concurrent-limited-${suffix}@touchgrass.test`;
   const googleEmail = `google-${suffix}@touchgrass.test`;
 
   beforeAll(async () => {
@@ -165,6 +166,59 @@ describe('Password reset security (e2e)', () => {
       .expect(429);
   });
 
+  it('rate limits concurrent forgot-password requests atomically', async () => {
+    const responses = await Promise.all(
+      Array.from({ length: 6 }, (_, index) =>
+        request(app.getHttpServer())
+          .post('/api/v1/auth/forgot-password')
+          .send({
+            email:
+              index % 2 === 0
+                ? concurrentLimitedEmail
+                : concurrentLimitedEmail.toUpperCase(),
+          }),
+      ),
+    );
+    const statuses = responses.map((response) => response.status).sort();
+    expect(statuses).toEqual([200, 200, 200, 429, 429, 429]);
+  });
+
+  it('allows only one of two reset tokens to win concurrently', async () => {
+    const user = await userModel.findOne({ email }).lean().exec();
+    expect(user).not.toBeNull();
+    const firstToken = `a${'1'.repeat(42)}`;
+    const secondToken = `b${'2'.repeat(42)}`;
+    const resetVersion = user?.passwordResetVersion ?? 0;
+    await tokenModel.create([
+      {
+        user: user?._id,
+        tokenHash: hashRaw(firstToken),
+        expiresAt: new Date(Date.now() + 60_000),
+        usedAt: null,
+        resetVersion,
+      },
+      {
+        user: user?._id,
+        tokenHash: hashRaw(secondToken),
+        expiresAt: new Date(Date.now() + 60_000),
+        usedAt: null,
+        resetVersion,
+      },
+    ]);
+
+    const responses = await Promise.all([
+      request(app.getHttpServer())
+        .post('/api/v1/auth/reset-password')
+        .send({ token: firstToken, newPassword: 'ConcurrentPassword123' }),
+      request(app.getHttpServer())
+        .post('/api/v1/auth/reset-password')
+        .send({ token: secondToken, newPassword: 'SecondPassword123' }),
+    ]);
+    expect(responses.map((response) => response.status).sort()).toEqual([
+      200, 400,
+    ]);
+  });
+
   it('creates Google user by provider sub and refuses email-only auto-linking', async () => {
     const first = await request(app.getHttpServer())
       .post('/api/v1/auth/google')
@@ -188,7 +242,15 @@ describe('Password reset security (e2e)', () => {
     if (!userModel || !app) return;
     const users = await userModel
       .find({
-        email: { $in: [email, unknownEmail, limitedEmail, googleEmail] },
+        email: {
+          $in: [
+            email,
+            unknownEmail,
+            limitedEmail,
+            concurrentLimitedEmail,
+            googleEmail,
+          ],
+        },
       })
       .select('_id')
       .lean()
@@ -198,7 +260,9 @@ describe('Password reset security (e2e)', () => {
     await rateModel
       .deleteMany({
         emailHash: {
-          $in: [email, unknownEmail, limitedEmail].map(hashEmail),
+          $in: [email, unknownEmail, limitedEmail, concurrentLimitedEmail].map(
+            hashEmail,
+          ),
         },
       })
       .exec();

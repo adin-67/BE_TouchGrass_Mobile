@@ -165,6 +165,34 @@ export class UsersService {
       .exec();
   }
 
+  async resetPasswordIfVersion(
+    userId: string,
+    expectedVersion: number,
+    passwordHash: string,
+  ): Promise<boolean> {
+    const versionFilter =
+      expectedVersion === 0
+        ? {
+            $or: [
+              { passwordResetVersion: 0 },
+              { passwordResetVersion: { $exists: false } },
+            ],
+          }
+        : { passwordResetVersion: expectedVersion };
+    const updatedUser = await this.userModel
+      .findOneAndUpdate(
+        { _id: userId, ...versionFilter },
+        {
+          $set: { passwordHash },
+          $inc: { passwordResetVersion: 1 },
+        },
+        { returnDocument: 'after', runValidators: true },
+      )
+      .select('_id')
+      .exec();
+    return updatedUser !== null;
+  }
+
   async spendLeafPoints(
     userId: string,
     leafPointCost: number,

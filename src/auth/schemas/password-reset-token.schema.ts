@@ -19,6 +19,9 @@ export class PasswordResetToken {
 
   @Prop({ type: Date, default: null })
   usedAt!: Date | null;
+
+  @Prop({ type: Number, required: true, default: 0, min: 0 })
+  resetVersion!: number;
 }
 
 export const PasswordResetTokenSchema =

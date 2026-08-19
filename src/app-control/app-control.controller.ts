@@ -28,6 +28,7 @@ import {
   AllowlistResponseDto,
   AppControlRuleListResponseDto,
   AppControlRuleResponseDto,
+  ProtectedPackagesResponseDto,
   UnlockOptionsResponseDto,
   UnlockResponseDto,
   UnlockStatusResponseDto,
@@ -112,6 +113,13 @@ export class AppControlController {
   @ApiOkResponse({ type: UnlockOptionsResponseDto })
   getUnlockOptions() {
     return this.appControlService.getUnlockOptions();
+  }
+
+  @Get('protected-packages')
+  @ApiOperation({ summary: 'Lấy danh sách package hệ thống không được khóa' })
+  @ApiOkResponse({ type: ProtectedPackagesResponseDto })
+  getProtectedPackages() {
+    return this.appControlService.getProtectedPackages();
   }
 
   @Post('unlock')

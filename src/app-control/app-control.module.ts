@@ -20,6 +20,10 @@ import {
   UsageSummary,
   UsageSummarySchema,
 } from './schemas/usage-summary.schema';
+import {
+  AppControlLock,
+  AppControlLockSchema,
+} from './schemas/app-control-lock.schema';
 
 @Module({
   imports: [
@@ -31,6 +35,7 @@ import {
         schema: TemporaryUnlockSessionSchema,
       },
       { name: UsageSummary.name, schema: UsageSummarySchema },
+      { name: AppControlLock.name, schema: AppControlLockSchema },
     ]),
     UsersModule,
   ],

@@ -36,7 +36,9 @@ import {
   type UserTaskDocument,
 } from './schemas/user-task.schema';
 
-const MAX_ACCEPTABLE_GPS_ACCURACY_METERS = 50;
+// A real phone can temporarily report 50–75 m accuracy in dense urban areas.
+// Values above this threshold remain too noisy for task verification.
+const MAX_ACCEPTABLE_GPS_ACCURACY_METERS = 75;
 const MAX_WALKING_SPEED_KMH = 15;
 const MAX_TRACKING_DURATION_SECONDS = 4 * 60 * 60;
 const GPS_CLOCK_TOLERANCE_MS = 2 * 60 * 1000;
@@ -804,13 +806,11 @@ export class UserTasksService {
       currentUserTask.trackingStartedAt,
     );
     const safeProgress = Math.min(summary.distanceMeters, task.targetValue);
-    const passed =
-      !summary.hasUnrealisticSpeed &&
-      summary.distanceMeters >= task.targetValue;
-    const failureReason = summary.hasUnrealisticSpeed
-      ? 'UNREALISTIC_SPEED'
-      : passed
-        ? null
+    const passed = summary.distanceMeters >= task.targetValue;
+    const failureReason = passed
+      ? null
+      : summary.hasUnrealisticSpeed && summary.distanceMeters === 0
+        ? 'UNREALISTIC_SPEED'
         : 'TARGET_NOT_REACHED';
 
     const finishedUserTask = await this.userTaskModel
@@ -826,9 +826,7 @@ export class UserTasksService {
             verificationStatus: passed
               ? UserTaskVerificationStatus.PASSED
               : UserTaskVerificationStatus.FAILED,
-            progress: summary.hasUnrealisticSpeed
-              ? currentUserTask.progress
-              : Math.max(currentUserTask.progress, safeProgress),
+            progress: Math.max(currentUserTask.progress, safeProgress),
             verifiedAt: passed ? new Date() : null,
             trackingEndedAt: summary.endedAt,
             distanceMeters: summary.distanceMeters,
@@ -2321,6 +2319,10 @@ export class UserTasksService {
 
       if (segmentSpeedKmh > MAX_WALKING_SPEED_KMH) {
         hasUnrealisticSpeed = true;
+        // Ignore isolated GPS jumps instead of invalidating an otherwise
+        // legitimate walking route. A route made only of fast segments still
+        // fails because its verified distance remains zero.
+        continue;
       }
 
       distanceMeters += segmentDistance;

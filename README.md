@@ -1,6 +1,7 @@
 # Touch Grass Mobile — Backend API
+Frontend Repo: https://github.com/huyvu26/TouchGrass
 
-Backend for the **CSE430 course project "Touch Grass"**: an Android app that blocks social-media
+This repo is backend for the **CSE430 course project "Touch Grass"**: an Android app that blocks social-media
 apps until the user completes real-world tasks (walking, photo verification, screen-off timers)
 and earns XP/Leaf Points that unlock limited app access. This repo serves the NestJS API that the
 React Native frontend talks to.
@@ -151,209 +152,177 @@ flowchart TD
 
 The backend is a NestJS 11 application organized into one root module and six feature modules: HealthModule, UsersModule, AuthModule, TasksModule, UserTasksModule, and AppControlModule. Each module owns a distinct part of the domain and its own Mongoose models, and shares functionality with other modules only through explicit exports, such as UsersModule exporting UsersService. Dependencies flow in one direction: AuthModule, UserTasksModule, and AppControlModule depend on UsersModule, and UserTasksModule additionally depends on TasksModule. Every module follows the same layered structure — controller, then service, then Mongoose model — with no separate repository layer. Cross-cutting concerns are handled once at the application root: a global validation pipe checks all request bodies, a global throttling guard limits requests to 100 per minute, and each controller requiring authentication applies a JwtAuthGuard at the class or method level. An additional role guard restricts the five admin task-management routes to administrator accounts.
 
-```plantuml
-@startuml D1_Backend_Component_Diagram
-title Touch Grass Backend — Component Diagram (NestJS Modules)
+```mermaid
+flowchart TD
+    subgraph App["AppModule (root)"]
+        VP["ValidationPipe\n(global)"]
+        TG["ThrottlerGuard\n(100 req/min, global)"]
+        Mongo["MongooseModule\n(MongoDB connection)"]
+    end
 
-skinparam componentStyle rectangle
-skinparam packageStyle rectangle
-skinparam linetype ortho
+    subgraph Health["HealthModule"]
+        HealthCtrl["HealthController"]
+        HealthSvc["HealthService"]
+        HealthCtrl --> HealthSvc
+    end
 
-package "AppModule (root)" as App {
-  component "ValidationPipe\n(global)" as VP
-  component "ThrottlerGuard\n(100 req/min, global)" as TG
-  component "MongooseModule\n(MongoDB connection)" as Mongo
-}
+    subgraph Users["UsersModule"]
+        UsersCtrl["UsersController"]
+        UsersSvc["UsersService"]
+        UsersCtrl --> UsersSvc
+    end
 
-package "HealthModule" as Health {
-  component "HealthController" as HealthCtrl
-  component "HealthService" as HealthSvc
-  HealthCtrl --> HealthSvc
-}
+    subgraph AuthMod["AuthModule"]
+        AuthCtrl["AuthController"]
+        AuthSvc["AuthService"]
+        EmailSvc["EmailService"]
+        GAuthSvc["GoogleAuthService"]
+        Jwt["JwtModule\n(global)"]
+        AuthCtrl --> AuthSvc
+        AuthSvc --> EmailSvc
+        AuthSvc --> GAuthSvc
+        AuthSvc --> Jwt
+    end
 
-package "UsersModule" as Users {
-  component "UsersController" as UsersCtrl
-  component "UsersService" as UsersSvc
-  UsersCtrl --> UsersSvc
-}
+    subgraph TasksMod["TasksModule"]
+        TasksCtrl["TasksController"]
+        AdminTasksCtrl["AdminTasksController"]
+        TasksSvc["TasksService"]
+        RolesGuard["RolesGuard"]
+        TasksCtrl --> TasksSvc
+        AdminTasksCtrl --> TasksSvc
+        AdminTasksCtrl --> RolesGuard
+    end
 
-package "AuthModule" as Auth {
-  component "AuthController" as AuthCtrl
-  component "AuthService" as AuthSvc
-  component "EmailService" as EmailSvc
-  component "GoogleAuthService" as GAuthSvc
-  component "JwtModule\n(global)" as Jwt
-  AuthCtrl --> AuthSvc
-  AuthSvc --> EmailSvc
-  AuthSvc --> GAuthSvc
-  AuthSvc --> Jwt
-}
+    subgraph UserTasksMod["UserTasksModule"]
+        UserTasksCtrl["UserTasksController"]
+        UserTasksSvc["UserTasksService"]
+        UserTasksCtrl --> UserTasksSvc
+    end
 
-package "TasksModule" as Tasks {
-  component "TasksController" as TasksCtrl
-  component "AdminTasksController" as AdminTasksCtrl
-  component "TasksService" as TasksSvc
-  component "RolesGuard" as RolesGuard
-  TasksCtrl --> TasksSvc
-  AdminTasksCtrl --> TasksSvc
-  AdminTasksCtrl --> RolesGuard
-}
+    subgraph AppControlMod["AppControlModule"]
+        AppControlCtrl["AppControlController"]
+        AppControlSvc["AppControlService"]
+        AppControlCtrl --> AppControlSvc
+    end
 
-package "UserTasksModule" as UserTasks {
-  component "UserTasksController" as UserTasksCtrl
-  component "UserTasksService" as UserTasksSvc
-  UserTasksCtrl --> UserTasksSvc
-}
+    AuthMod -.->|imports| Users
+    UserTasksMod -.->|imports| TasksMod
+    UserTasksMod -.->|imports| Users
+    AppControlMod -.->|imports| Users
 
-package "AppControlModule" as AppControl {
-  component "AppControlController" as AppControlCtrl
-  component "AppControlService" as AppControlSvc
-  AppControlCtrl --> AppControlSvc
-}
-
-Auth ..> Users : imports
-UserTasks ..> Tasks : imports
-UserTasks ..> Users : imports
-AppControl ..> Users : imports
-
-App ..> Health
-App ..> Users
-App ..> Auth
-App ..> Tasks
-App ..> UserTasks
-App ..> AppControl
-
-note right of App
-  Global: ValidationPipe, ThrottlerGuard,
-  api/v1 prefix, MongooseModule
-end note
-
-note bottom of Tasks
-  RolesGuard + @Roles('admin')
-  protects /admin/tasks/* only
-end note
-
-@enduml
+    App -.-> Health
+    App -.-> Users
+    App -.-> AuthMod
+    App -.-> TasksMod
+    App -.-> UserTasksMod
+    App -.-> AppControlMod
 ```
+
+> **Notes:**
+> - Dotted lines (`-.->`) represent module imports; solid lines (`-->`) represent intra-module dependencies.
+> - `AppModule` also applies the global `ValidationPipe`, `ThrottlerGuard`, `/api/v1` prefix, and `MongooseModule` connection.
+> - `RolesGuard` + `@Roles('admin')` protects `/admin/tasks/*` only.
 
 ### Data Model
 
 The database contains nine MongoDB collections, distributed across the users, tasks, user-tasks, auth, and app-control modules, with each collection managed exclusively by its owning module. Relationships between collections are implemented as object references rather than database-level foreign keys, so integrity is enforced in the service layer instead of by MongoDB itself. User is the central entity, referenced by most other collections, while UserTask also references Task and is optionally linked from a temporary unlock session when an unlock was earned by completing a task. One collection, the password-reset rate limit, is keyed by a hashed email address instead of a user reference, which allows the system to rate-limit reset requests even for accounts that do not exist. Several collections use unique compound indexes to prevent duplicate or conflicting records — for example, a user cannot accept the same task twice in one cycle, and repeated unlock requests with the same idempotency key are treated as one operation. Two collections also use expiring indexes so that password-reset tokens and rate-limit records are removed automatically once they are no longer needed.
 
-```plantuml
-@startuml D2_Backend_Data_Model
-title Touch Grass Backend — MongoDB Data Model (D2)
+```mermaid
+erDiagram
+    User {
+        ObjectId _id PK
+        string email UK "unique"
+        string passwordHash "select:false"
+        number xp
+        number level
+        number leafPoints
+        number unlockMinutesBalance
+        string role "user | admin"
+    }
 
-skinparam linetype ortho
+    Task {
+        ObjectId _id PK
+        string code UK "unique, immutable"
+        enum category
+        enum verificationType
+        enum frequency
+        enum difficulty
+        number rewardXp
+        number rewardLp
+        number unlockMinutes
+        number targetValue
+        number targetUnit
+        boolean active
+    }
 
-package "users" {
-  entity "User" as User {
-    * _id : ObjectId
-    --
-    email : string <<unique>>
-    passwordHash : string <<select:false>>
-    xp / level / leafPoints / unlockMinutesBalance : number
-    role : "user" | "admin"
-  }
-}
+    UserTask {
+        ObjectId _id PK
+        ObjectId user FK "ref User"
+        ObjectId task FK "ref Task"
+        string cycleKey "unique w/ user,task"
+        enum status "IN_PROGRESS|COMPLETED|CANCELLED|EXPIRED"
+        enum verificationStatus "NOT_STARTED|IN_PROGRESS|PASSED|FAILED"
+        boolean rewardGranted
+    }
 
-package "tasks" {
-  entity "Task" as Task {
-    * _id : ObjectId
-    --
-    code : string <<unique, immutable>>
-    category / verificationType / frequency / difficulty : enum
-    rewardXp / rewardLp / unlockMinutes : number
-    targetValue / targetUnit : number
-    active : boolean
-  }
-}
+    PasswordResetToken {
+        ObjectId _id PK
+        ObjectId user FK "ref User"
+        string tokenHash "unique, select:false"
+        Date expiresAt "TTL 0s"
+    }
 
-package "user-tasks" {
-  entity "UserTask" as UserTask {
-    * _id : ObjectId
-    --
-    # user : ObjectId --> User
-    # task : ObjectId --> Task
-    cycleKey : string <<unique w/ user,task>>
-    status : IN_PROGRESS|COMPLETED|CANCELLED|EXPIRED
-    verificationStatus : NOT_STARTED|IN_PROGRESS|PASSED|FAILED
-    rewardGranted : boolean
-  }
-}
+    PasswordResetRateLimit {
+        ObjectId _id PK
+        string emailHash UK "unique — keyed by emailHash, not user"
+        Date updatedAt "TTL 3600s"
+    }
 
-package "auth" {
-  entity "PasswordResetToken" as PRT {
-    * _id : ObjectId
-    --
-    # user : ObjectId --> User
-    tokenHash : string <<unique, select:false>>
-    expiresAt : Date <<TTL 0s>>
-  }
+    AppControlRule {
+        ObjectId _id PK
+        ObjectId user FK "ref User"
+        string packageName
+        boolean enabled
+    }
 
-  entity "PasswordResetRateLimit" as PRRL {
-    * _id : ObjectId
-    --
-    emailHash : string <<unique>>
-    updatedAt : Date <<TTL 3600s>>
-  }
-}
+    PersonalAllowlist {
+        ObjectId _id PK
+        ObjectId user FK "ref User"
+        string packageName
+    }
 
-package "app-control" {
-  entity "AppControlRule" as ACR {
-    * _id : ObjectId
-    --
-    # user : ObjectId --> User
-    packageName : string
-    enabled : boolean
-  }
-  note bottom of ACR : unique {user, packageName}
+    TemporaryUnlockSession {
+        ObjectId _id PK
+        ObjectId user FK "ref User"
+        ObjectId sourceUserTask FK "ref UserTask (nullable)"
+        string optionId "service-layer enum"
+        enum status "ACTIVE|EXPIRED|CANCELLED"
+        string operationKey "unique w/ user"
+    }
 
-  entity "PersonalAllowlist" as PAL {
-    * _id : ObjectId
-    --
-    # user : ObjectId --> User
-    packageName : string
-  }
-  note bottom of PAL : unique {user, packageName}
+    UsageSummary {
+        ObjectId _id PK
+        ObjectId user FK "ref User"
+        string date "YYYY-MM-DD"
+        number totalScreenTimeSeconds
+    }
 
-  entity "TemporaryUnlockSession" as TUS {
-    * _id : ObjectId
-    --
-    # user : ObjectId --> User
-    # sourceUserTask : ObjectId --> UserTask (nullable)
-    optionId : string (service-layer enum)
-    status : ACTIVE|EXPIRED|CANCELLED
-    operationKey : string <<unique w/ user>>
-  }
-
-  entity "UsageSummary" as US {
-    * _id : ObjectId
-    --
-    # user : ObjectId --> User
-    date : string "YYYY-MM-DD"
-    totalScreenTimeSeconds : number
-  }
-  note bottom of US : unique {user, date}
-}
-
-User ||--o{ UserTask
-Task ||--o{ UserTask
-User ||--o{ PasswordResetToken
-User ||--o{ AppControlRule
-User ||--o{ PersonalAllowlist
-User ||--o{ TemporaryUnlockSession
-User ||--o{ UsageSummary
-UserTask |o..o| TemporaryUnlockSession : sourceUserTask (optional)
-
-note right of PRRL
-  Keyed by emailHash, not user —
-  supports rate-limiting on
-  unregistered emails
-end note
-
-@enduml
+    User ||--o{ UserTask : "has"
+    Task ||--o{ UserTask : "assigned via"
+    User ||--o{ PasswordResetToken : "has"
+    User ||--o{ AppControlRule : "has"
+    User ||--o{ PersonalAllowlist : "has"
+    User ||--o{ TemporaryUnlockSession : "has"
+    User ||--o{ UsageSummary : "has"
+    UserTask |o--o| TemporaryUnlockSession : "sourceUserTask (optional)"
 ```
+
+> **Notes:**
+> - `PasswordResetRateLimit` is keyed by `emailHash`, not `user` — supports rate-limiting on unregistered emails.
+> - `UserTask` has a compound unique index on `{user, task, cycleKey}`.
+> - `AppControlRule`, `PersonalAllowlist`, and `UsageSummary` each have compound unique indexes on their user + natural key.
+> - `TemporaryUnlockSession.operationKey` is unique per user (compound index).
 
 ## Authentication flows
 

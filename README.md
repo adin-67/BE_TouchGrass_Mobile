@@ -147,12 +147,10 @@ The full per-endpoint catalog (method, auth, request/response, notes) is in the 
 ```mermaid
 flowchart LR
     subgraph Actors
-        NewUser["👤 New User"]
-        ExistingUser["👤 Existing User"]
-        User["👤 User"]
-        Android["📱 Native Android Services"]
-        NewUser --|> User
-        ExistingUser --|> User
+        NewUser["New User"]
+        ExistingUser["Existing User"]
+        User["User"]
+        Android["Native Android Services"]
     end
 
     subgraph System["Touch Grass App"]
@@ -168,13 +166,28 @@ flowchart LR
         UC10["Unlock Time"]
     end
 
-    User --> UC03 & UC04 & UC05 & UC06 & UC07 & UC08 & UC09 & UC10
+    User --> UC03
+    User --> UC04
+    User --> UC05
+    User --> UC06
+    User --> UC07
+    User --> UC08
+    User --> UC09
+    User --> UC10
     NewUser --> UC01
     ExistingUser --> UC02
-    Android --> UC04 & UC06 & UC09 & UC10
-
-    UC03 --> UC04 & UC05 & UC06 & UC07
-    UC04 & UC05 & UC06 & UC07 --> UC08
+    Android --> UC04
+    Android --> UC06
+    Android --> UC09
+    Android --> UC10
+    UC03 --> UC04
+    UC03 --> UC05
+    UC03 --> UC06
+    UC03 --> UC07
+    UC04 --> UC08
+    UC05 --> UC08
+    UC06 --> UC08
+    UC07 --> UC08
     UC08 --> UC10
 ```
 
@@ -478,19 +491,19 @@ sequenceDiagram
                     HomeScreen ->> HomeScreen: useFocusEffect(() => loadDashboard())
 
                     par getMyProfile()
-                        HomeScreen ->> ApiClient: GET /users/me (Authorization: Bearer <token>)
+                        HomeScreen ->> ApiClient: GET /users/me (Authorization: Bearer token)
                         ApiClient ->> JwtGuard: verify JWT
-                        JwtGuard -->> UsersController: request.user = { sub, role }
+                        JwtGuard -->> UsersController: request.user = sub, role
                         UsersController ->> UsersService: findById(sub)
                         UsersService ->> MongoDB: findById(sub)
                         MongoDB -->> UsersService: user
                         UsersService -->> UsersController: user
-                        UsersController -->> ApiClient: 200 { profile }
+                        UsersController -->> ApiClient: 200 profile
                         ApiClient -->> HomeScreen: profile
-                    else getTaskSummary() / getUserTasks(1,20)
+                    and getTaskSummary
                         HomeScreen ->> ApiClient: GET /user-tasks/summary + GET /user-tasks
                         ApiClient -->> HomeScreen: taskSummary, userTasks
-                    else local app-control state
+                    and local app-control state
                         HomeScreen ->> NativeModules: isAppControlEnabled()
                         HomeScreen ->> AuthStorage: getAppLimitRules()
                         NativeModules -->> HomeScreen: controlEnabled
@@ -525,7 +538,7 @@ sequenceDiagram
     participant Users as UsersService
     participant DB as MongoDB (user_tasks)
 
-    Note over RN: TaskDetailScreen already called<br/>POST /user-tasks {taskId} → status = IN_PROGRESS<br/>navigated here with {userTaskId}
+    Note over RN: TaskDetailScreen already called, POST /user-tasks taskId = IN_PROGRESS, navigated here with userTaskId
 
     rect rgb(240, 248, 240)
         Note over User,DB: Start GPS verification session
@@ -543,37 +556,37 @@ sequenceDiagram
         else verificationStatus == PASSED (already verified earlier)
             Svc -->> Ctrl: gpsResponse(alreadyProcessed = true)
         else verificationStatus == IN_PROGRESS with trackingStartedAt set
-            Note right of Svc: idempotent resume – same session, no reset
+            Note right of Svc: idempotent resume - same session, no reset
             Svc -->> Ctrl: gpsResponse(alreadyProcessed = true)
-        else NOT_STARTED / FAILED (fresh or retried session)
-            Svc ->> DB: findOneAndUpdate(guard: status=IN_PROGRESS AND<br/>verificationStatus in {unset, NOT_STARTED, FAILED})<br/>SET verificationStatus=IN_PROGRESS, trackingStartedAt=now,<br/>distance/duration/speed/sampleCount=0, INC verificationAttempts
+        else NOT_STARTED or FAILED (fresh or retried session)
+            Svc ->> DB: findOneAndUpdate guard status=IN_PROGRESS AND verificationStatus in unset NOT_STARTED FAILED, SET verificationStatus=IN_PROGRESS trackingStartedAt=now distance duration speed sampleCount=0 INC verificationAttempts
             DB -->> Svc: startedUserTask (or null if raced)
             opt update returned null (race)
                 Svc ->> DB: re-fetch latest
-                Svc -->> Ctrl: gpsResponse(alreadyProcessed = true)<br/>or 409 "Could not start GPS tracking"
+                Svc -->> Ctrl: gpsResponse(alreadyProcessed = true) or 409 Could not start GPS tracking
             end
             Svc -->> Ctrl: gpsResponse(alreadyProcessed = false)
         end
         deactivate Svc
-        Ctrl -->> RN: 200 {trackingStartedAt, targetValue, verificationStatus}
+        Ctrl -->> RN: 200 trackingStartedAt targetValue verificationStatus
         deactivate Ctrl
     end
 
-    RN ->> RN: setPhase('tracking') startLocationWatch()
+    RN ->> RN: setPhase tracking, startLocationWatch
 
     rect rgb(245, 248, 240)
         Note over User,DB: Client-side collection (no network calls)
         loop every GPS fix (watchPosition, distanceFilter 3m, up to 500 points)
             RN ->> RN: recordPosition(fix)
-            Note right of RN: keep only if accuracy ≤ 50m<br/>AND timestamp strictly increasing<br/>vs. the last kept point
+            Note right of RN: keep only if accuracy <= 50m AND timestamp strictly increasing vs. the last kept point
         end
     end
 
     rect rgb(240, 245, 250)
-        Note over User,DB: Finish & server-side verification
-        User ->> RN: tap "Kết thúc và xác minh"
-        RN ->> RN: guard: points.length ≥ 2 (else alert, stay tracking)
-        RN ->> Ctrl: POST /user-tasks/:id/gps/finish {points: GpsPoint[2..500]}
+        Note over User,DB: Finish and server-side verification
+        User ->> RN: tap Ket thuc va xac minh
+        RN ->> RN: guard points.length >= 2 (else alert, stay tracking)
+        RN ->> Ctrl: POST /user-tasks/:id/gps/finish with points GpsPoint 2..500
         activate Ctrl
         Ctrl ->> Svc: finishGpsTracking(userId, userTaskId, dto)
         activate Svc
@@ -582,23 +595,23 @@ sequenceDiagram
 
         alt verificationStatus == PASSED already
             Svc -->> Ctrl: gpsResponse(alreadyProcessed = true)
-        else status != IN_PROGRESS OR verificationStatus != IN_PROGRESS<br/>OR trackingStartedAt missing
-            Svc -->> Ctrl: 409 ConflictException "GPS tracking has not been started"
-        else session is live — run calculateGpsSummary(points, trackingStartedAt)
-            Svc ->> Svc: filter points where accuracy ≤ 50m
+        else status != IN_PROGRESS OR verificationStatus != IN_PROGRESS OR trackingStartedAt missing
+            Svc -->> Ctrl: 409 ConflictException GPS tracking has not been started
+        else session is live - run calculateGpsSummary(points, trackingStartedAt)
+            Svc ->> Svc: filter points where accuracy <= 50m
             alt accuratePoints.length < 2
-                Svc -->> Ctrl: 400 "At least two accurate GPS points are required"
+                Svc -->> Ctrl: 400 At least two accurate GPS points are required
             else timestamps not strictly increasing
-                Svc -->> Ctrl: 400 "GPS point timestamps must be strictly increasing"
-            else timestamps outside ±2min clock tolerance of<br/>trackingStartedAt / now
-                Svc -->> Ctrl: 400 "GPS point timestamps are outside the tracking session"
-            else duration ≤ 0 or > 4h (client or server-measured)
-                Svc -->> Ctrl: 400 "Invalid GPS tracking duration"
+                Svc -->> Ctrl: 400 GPS point timestamps must be strictly increasing
+            else timestamps outside 2min clock tolerance of trackingStartedAt or now
+                Svc -->> Ctrl: 400 GPS point timestamps are outside the tracking session
+            else duration <= 0 or > 4h (client or server-measured)
+                Svc -->> Ctrl: 400 Invalid GPS tracking duration
             else all checks pass
                 loop each consecutive point pair
                     Svc ->> Svc: segmentDistance = Haversine(p[i-1], p[i])
-                    Note right of Svc: skip segment if segmentDistance ≤<br/>max(2m, accuracyNoise × 0.15)<br/>(GPS noise floor)
-                    Svc ->> Svc: segmentSpeedKmh = segmentDistance / segmentSeconds × 3.6
+                    Note right of Svc: skip segment if segmentDistance <= max(2m, accuracyNoise * 0.15) (GPS noise floor)
+                    Svc ->> Svc: segmentSpeedKmh = segmentDistance / segmentSeconds * 3.6
                     alt segmentSpeedKmh > 15 km/h
                         Svc ->> Svc: hasUnrealisticSpeed = true
                     else within walking speed
@@ -607,14 +620,14 @@ sequenceDiagram
                 end
 
                 alt hasUnrealisticSpeed == true
-                    Svc ->> Svc: passed = false, failureReason = "UNREALISTIC_SPEED"
-                else distanceMeters ≥ task.targetValue
+                    Svc ->> Svc: passed = false, failureReason = UNREALISTIC_SPEED
+                else distanceMeters >= task.targetValue
                     Svc ->> Svc: passed = true, failureReason = null
                 else distanceMeters < task.targetValue
-                    Svc ->> Svc: passed = false, failureReason = "TARGET_NOT_REACHED"
+                    Svc ->> Svc: passed = false, failureReason = TARGET_NOT_REACHED
                 end
 
-                Svc ->> DB: findOneAndUpdate(guard: status=IN_PROGRESS AND<br/>verificationStatus=IN_PROGRESS)<br/>SET verificationStatus=PASSED|FAILED, progress,<br/>distanceMeters, durationSeconds, averageSpeedKmh,<br/>verifiedAt, trackingEndedAt, failureReason
+                Svc ->> DB: findOneAndUpdate guard status=IN_PROGRESS AND verificationStatus=IN_PROGRESS, SET verificationStatus=PASSED or FAILED progress distanceMeters durationSeconds averageSpeedKmh verifiedAt trackingEndedAt failureReason
                 DB -->> Svc: finishedUserTask (or null if raced)
 
                 alt update returned null (state changed mid-request)
@@ -622,26 +635,26 @@ sequenceDiagram
                     alt latest.verificationStatus != IN_PROGRESS
                         Svc -->> Ctrl: gpsResponse(alreadyProcessed = true)
                     else
-                        Svc -->> Ctrl: 409 "GPS tracking state changed while finishing"
+                        Svc -->> Ctrl: 409 GPS tracking state changed while finishing
                     end
                 else
-                    Svc -->> Ctrl: gpsResponse(passed, failureReason,<br/>summary, alreadyProcessed = false)
+                    Svc -->> Ctrl: gpsResponse(passed, failureReason, summary, alreadyProcessed = false)
                 end
             end
         end
         deactivate Svc
-        Ctrl -->> RN: 200 {verificationStatus, passed, summary, failureReason}
+        Ctrl -->> RN: 200 verificationStatus passed summary failureReason
         deactivate Ctrl
     end
 
     alt verificationStatus == PASSED
-        RN ->> RN: setPhase('passed')
-        RN ->> RN: completeAndOpenReward() [auto-chained]
+        RN ->> RN: setPhase passed
+        RN ->> RN: completeAndOpenReward (auto-chained)
     else verificationStatus == FAILED
-        RN -->> User: show failure message (UNREALISTIC_SPEED / TARGET_NOT_REACHED), setPhase('failed')
-        User ->> RN: tap "Thử lại GPS"
+        RN -->> User: show failure message (UNREALISTIC_SPEED / TARGET_NOT_REACHED), setPhase failed
+        User ->> RN: tap Thu lai GPS
         RN ->> Ctrl: POST /user-tasks/:id/gps/start (retry)
-        Note right of Ctrl: verificationStatus=FAILED is an<br/>allowed restart state (see first alt above)
+        Note right of Ctrl: verificationStatus=FAILED is an allowed restart state (see first alt above)
     end
 
     rect rgb(240, 240, 250)
@@ -654,20 +667,20 @@ sequenceDiagram
         alt currentUserTask.status == COMPLETED already
             Svc -->> Ctrl: cached response (idempotent re-call)
         else status != IN_PROGRESS
-            Svc -->> Ctrl: 409 "Only an in-progress task can be completed"
-        else task.verificationType == GPS_DISTANCE AND<br/>verificationStatus != PASSED
-            Svc -->> Ctrl: 409 "GPS task must pass verification before completion"
+            Svc -->> Ctrl: 409 Only an in-progress task can be completed
+        else task.verificationType == GPS_DISTANCE AND verificationStatus != PASSED
+            Svc -->> Ctrl: 409 GPS task must pass verification before completion
         else progress < task.targetValue
-            Svc -->> Ctrl: 400 "Task target has not been reached"
+            Svc -->> Ctrl: 400 Task target has not been reached
         else all guards pass
-            Svc ->> DB: findOneAndUpdate(guard: status=IN_PROGRESS AND<br/>progress ≥ targetValue)<br/>SET status=COMPLETED, completedAt=now
+            Svc ->> DB: findOneAndUpdate guard status=IN_PROGRESS AND progress >= targetValue, SET status=COMPLETED completedAt=now
             DB -->> Svc: completedUserTask
-            Svc -->> Ctrl: {userTask, task,<br/>rewardPreview:{xp, leafPoints, unlockMinutes:0}}
+            Svc -->> Ctrl: userTask task rewardPreview xp leafPoints unlockMinutes 0
         end
         deactivate Svc
         Ctrl -->> RN: 200
         deactivate Ctrl
-        RN ->> Reward: navigation.replace('Reward', {userTaskId})
+        RN ->> Reward: navigation.replace Reward with userTaskId
     end
 
     rect rgb(250, 245, 240)
@@ -679,21 +692,21 @@ sequenceDiagram
         activate Svc
         Svc ->> DB: findOne(userTask)
         alt status != COMPLETED
-            Svc -->> Ctrl: 409 "Task must be completed before claiming reward"
+            Svc -->> Ctrl: 409 Task must be completed before claiming reward
         else status == COMPLETED
             Svc ->> Svc: task = findById(userTask.task)
             alt userTask.rewardGranted == false (first claim)
-                Svc ->> Users: grantTaskReward(userId, userTaskId,<br/>task.rewardXp, task.rewardLp)
+                Svc ->> Users: grantTaskReward(userId, userTaskId, task.rewardXp, task.rewardLp)
                 activate Users
-                Users ->> Users: atomically credit xp += rewardXp,<br/>leafPoints += rewardLp;<br/>recalculate level = floor(xp/100)+1
+                Users ->> Users: atomically credit xp += rewardXp leafPoints += rewardLp recalculate level = floor(xp/100)+1
                 Users -->> Svc: updated user
                 deactivate Users
-                Svc ->> DB: updateOne(guard: rewardGranted=false)<br/>SET rewardGranted=true
-                Note right of Svc: idempotency guard: the filter on<br/>rewardGranted=false makes a concurrent<br/>double-claim a no-op on the 2nd writer
+                Svc ->> DB: updateOne guard rewardGranted=false, SET rewardGranted=true
+                Note right of Svc: idempotency guard: the filter on rewardGranted=false makes a concurrent double-claim a no-op on the 2nd writer
             else rewardGranted == true already
                 Svc ->> Svc: alreadyClaimed = true (no credit issued again)
             end
-            Svc -->> Ctrl: {reward:{xp, leafPoints, unlockMinutes:0},<br/>profile:{xp, level, leafPoints, unlockMinutesBalance},<br/>alreadyClaimed}
+            Svc -->> Ctrl: reward xp leafPoints unlockMinutes 0 profile xp level leafPoints unlockMinutesBalance alreadyClaimed
         end
         deactivate Svc
         Ctrl -->> Reward: 200
@@ -738,22 +751,22 @@ sequenceDiagram
     participant DB as MongoDB UserTask
 
     rect rgb(240, 248, 240)
-        Note over User,DB: Capture & on-device labeling
+        Note over User,DB: Capture and on-device labeling
         User ->> Camera: tap shutter
-        Camera ->> Camera: capturePhotoToFile()\n(local file, JPEG, capturedAt = now())
+        Camera ->> Camera: capturePhotoToFile() (local file, JPEG, capturedAt = now())
         Camera ->> MLKit: label(imageUri)
-        MLKit -->> Camera: labels[] {text, confidence}
+        MLKit -->> Camera: labels[] text confidence
 
         alt no labels detected
-            Camera -->> User: Alert "Chưa nhận diện được ảnh" (capture discarded, nothing sent)
+            Camera -->> User: Alert Chua nhan dien duoc anh (capture discarded, nothing sent)
         else labels found
-            Camera ->> Analysis: navigate('AIAnalysis', {userTaskId, imageUri, capturedAt, labels})
+            Camera ->> Analysis: navigate(AIAnalysis, userTaskId, imageUri, capturedAt, labels)
 
             rect rgb(238, 245, 238)
                 Note over User,DB: Submit for server-side verification
                 Analysis ->> Api: verifyUserTaskPhoto(userTaskId, imageUri, labels, capturedAt)
                 Api ->> Ctrl: POST /user-tasks/:id/photo/verify (multipart: image, labels=JSON, capturedAt)
-                Ctrl ->> Multer: parse multipart (limits: 1 file, ≤5MB)
+                Ctrl ->> Multer: parse multipart (limits: 1 file, max 5MB)
                 Multer -->> Ctrl: image.buffer
                 Ctrl ->> Svc: verifyPhoto(userId, userTaskId, dto, image)
             end
@@ -761,80 +774,80 @@ sequenceDiagram
             rect rgb(250, 245, 240)
                 Note over User,DB: Anti-cheat: structural checks
                 alt userTaskId is not a valid ObjectId
-                    Svc -->> Ctrl: 400 "Invalid user task id"
-                else image missing (stripped by multer / not sent)
-                    Svc -->> Ctrl: 400 "Image file is required"
-                else size outside [1 KB, 5 MB]
-                    Svc -->> Ctrl: 400 "Image size must be between 1 KB and 5 MB"
+                    Svc -->> Ctrl: 400 Invalid user task id
+                else image missing (stripped by multer or not sent)
+                    Svc -->> Ctrl: 400 Image file is required
+                else size outside 1 KB to 5 MB
+                    Svc -->> Ctrl: 400 Image size must be between 1 KB and 5 MB
                 else all structural checks pass
-                    Svc ->> Svc: detectImageMimeType(buffer)\n(byte sniff, ignores client Content-Type:\nFFD8FF=JPEG, 89504E47...=PNG, RIFF..WEBP=WebP)
+                    Svc ->> Svc: detectImageMimeType(buffer) byte sniff ignores client Content-Type FFD8FF=JPEG 89504E47=PNG RIFF WEBP=WebP
                     alt no known signature matched
-                        Svc -->> Ctrl: 400 "Only JPEG, PNG, or WebP images are allowed"
+                        Svc -->> Ctrl: 400 Only JPEG PNG or WebP images are allowed
                     else MIME type valid
                         rect rgb(245, 248, 245)
-                            Note over User,DB: Anti-cheat: freshness / clock-skew check
-                            Svc ->> Svc: compare capturedAt vs server now()\n(tolerance +2 min future, max age 5 min)
+                            Note over User,DB: Anti-cheat: freshness and clock-skew check
+                            Svc ->> Svc: compare capturedAt vs server now() tolerance +2 min future max age 5 min
                             alt capturedAt too far in the future OR older than 5 min
-                                Svc -->> Ctrl: 400 "Photo must be captured within the last 5 minutes"
+                                Svc -->> Ctrl: 400 Photo must be captured within the last 5 minutes
                             else timestamp valid
-                                Svc ->> DB: findOne(UserTask{_id, user}) + submittedPhotoHashes
-                                DB -->> Svc: currentUserTask | null
+                                Svc ->> DB: findOne(UserTask _id user) + submittedPhotoHashes
+                                DB -->> Svc: currentUserTask or null
                                 alt currentUserTask not found
-                                    Svc -->> Ctrl: 404 "User task not found"
+                                    Svc -->> Ctrl: 404 User task not found
                                 else currentUserTask.status != IN_PROGRESS
-                                    Svc -->> Ctrl: 409 "Only an in-progress task can verify a photo"
+                                    Svc -->> Ctrl: 409 Only an in-progress task can verify a photo
                                 else task and status OK
                                     Svc ->> Svc: load Task by currentUserTask.task
                                     alt task.verificationType != PHOTO_AI
-                                        Svc -->> Ctrl: 400 "Task does not use photo verification"
+                                        Svc -->> Ctrl: 400 Task does not use photo verification
                                     else task.verificationLabels is empty (misconfigured task)
-                                        Svc -->> Ctrl: 500 "Photo verification labels are not configured for this task"
+                                        Svc -->> Ctrl: 500 Photo verification labels are not configured for this task
                                     else task config OK
                                         alt verificationStatus already PASSED
-                                            Svc -->> Ctrl: 200 (idempotent) passed=true, alreadyProcessed=true
+                                            Svc -->> Ctrl: 200 (idempotent) passed=true alreadyProcessed=true
                                         else not yet passed
                                             alt capturedAt < startedAt - tolerance
-                                                Svc -->> Ctrl: 400 "Photo was captured before the task was started"
+                                                Svc -->> Ctrl: 400 Photo was captured before the task was started
                                             else timestamp after task start
                                                 rect rgb(250, 250, 240)
                                                     Note over User,DB: Anti-cheat: duplicate-photo detection
                                                     Svc ->> Svc: photoHash = sha256(image.buffer)
-                                                    alt hash already in THIS task's submittedPhotoHashes
-                                                        Svc -->> Ctrl: 200 (idempotent) alreadyProcessed=true, photoAccepted=false
+                                                    alt hash already in THIS task submittedPhotoHashes
+                                                        Svc -->> Ctrl: 200 (idempotent) alreadyProcessed=true photoAccepted=false
                                                     else new hash for this task
-                                                        Svc ->> DB: findOne(UserTask{user, _id != this, submittedPhotoHashes: hash})
-                                                        DB -->> Svc: reusedPhoto | null
+                                                        Svc ->> DB: findOne(UserTask user _id != this submittedPhotoHashes: hash)
+                                                        DB -->> Svc: reusedPhoto or null
                                                         alt reusedPhoto found (same photo reused on a different task)
-                                                            Svc -->> Ctrl: 409 "This photo has already been submitted for another task"
+                                                            Svc -->> Ctrl: 409 This photo has already been submitted for another task
                                                         else photo is unique across tasks
                                                             rect rgb(240, 245, 250)
                                                                 Note over User,DB: Anti-cheat: ML Kit label match
-                                                                Svc ->> Svc: match submitDto.labels against task.verificationLabels<br/>@ verificationMinConfidence (default 0.7)
+                                                                Svc ->> Svc: match submitDto.labels against task.verificationLabels at verificationMinConfidence (default 0.7)
                                                                 alt no accepted label OR confidence < minimum
-                                                                    Svc ->> DB: findOneAndUpdate(guard: status=IN_PROGRESS, hash not-in set)<br/>SET verificationStatus=FAILED, +1 attempt, addToSet(hash)
-                                                                    DB -->> Svc: updated doc | null (concurrent write)
+                                                                    Svc ->> DB: findOneAndUpdate guard status=IN_PROGRESS hash not-in set SET verificationStatus=FAILED +1 attempt addToSet(hash)
+                                                                    DB -->> Svc: updated doc or null (concurrent write)
                                                                     alt update returned null
                                                                         Svc ->> DB: re-fetch latest UserTask
                                                                         alt hash now present (concurrent duplicate request)
                                                                             Svc -->> Ctrl: 200 idempotent duplicate result
                                                                         else
-                                                                            Svc -->> Ctrl: 409 "Photo verification state changed while processing"
+                                                                            Svc -->> Ctrl: 409 Photo verification state changed while processing
                                                                         end
                                                                     else update applied
-                                                                        Svc -->> Ctrl: 200 rejected<br/>failureReason = LABEL_NOT_ACCEPTED | LOW_CONFIDENCE
+                                                                        Svc -->> Ctrl: 200 rejected failureReason = LABEL_NOT_ACCEPTED or LOW_CONFIDENCE
                                                                     end
                                                                 else label accepted at/above confidence threshold
-                                                                    Svc ->> DB: findOneAndUpdate(guard: status/progress/hash unchanged)<br/>SET progress = min(progress+1, targetValue),<br/>PASSED if target reached, else IN_PROGRESS
-                                                                    DB -->> Svc: updated doc | null (concurrent write)
+                                                                    Svc ->> DB: findOneAndUpdate guard status/progress/hash unchanged SET progress = min(progress+1 targetValue) PASSED if target reached else IN_PROGRESS
+                                                                    DB -->> Svc: updated doc or null (concurrent write)
                                                                     alt update returned null
                                                                         Svc ->> DB: re-fetch latest UserTask
                                                                         alt hash now present (concurrent duplicate request)
                                                                             Svc -->> Ctrl: 200 idempotent duplicate result
                                                                         else
-                                                                            Svc -->> Ctrl: 409 "Photo verification state changed while processing"
+                                                                            Svc -->> Ctrl: 409 Photo verification state changed while processing
                                                                         end
                                                                     else update applied
-                                                                        Svc -->> Ctrl: 200 accepted<br/>progress updated, passed = (progress ≥ targetValue)
+                                                                        Svc -->> Ctrl: 200 accepted progress updated passed = (progress >= targetValue)
                                                                     end
                                                                 end
                                                             end
@@ -859,11 +872,11 @@ sequenceDiagram
                 alt result.passed == true
                     Analysis ->> Api: completeUserTask(userTaskId)
                     Api ->> Ctrl: POST /user-tasks/:id/complete
-                    Analysis ->> Analysis: navigation.replace('Reward', {userTaskId})
+                    Analysis ->> Analysis: navigation.replace(Reward, userTaskId)
                 else photoAccepted == true (multi-photo task, target not yet reached)
-                    Analysis -->> User: "Ảnh đã được chấp nhận" + "Chụp ảnh tiếp theo" → back to Camera
+                    Analysis -->> User: Anh da duoc chap nhan + Chup anh tiep theo back to Camera
                 else rejected (LABEL_NOT_ACCEPTED / LOW_CONFIDENCE / duplicate)
-                    Analysis -->> User: show failureReason + "Chụp lại" → back to Camera
+                    Analysis -->> User: show failureReason + Chup lai back to Camera
                 end
             end
         end
@@ -891,77 +904,77 @@ sequenceDiagram
         loop every 1s or on window-state change
             A11y ->> A11y: read currentForegroundPackage
             A11y ->> Policy: evaluate(context, packageName)
-            Policy ->> Prefs: read enabled flag,<br/>unlock_until_&lt;pkg&gt;, rules JSON
-            Policy ->> Policy: isProtected? / schedule active? /<br/>getTodayUsageMinutes()
-            Policy -->> A11y: Decision(shouldLock, appName,<br/>usedMinutes, limitMinutes)
+            Policy ->> Prefs: read enabled flag unlock_until_pkg rules JSON
+            Policy ->> Policy: isProtected? schedule active? getTodayUsageMinutes()
+            Policy -->> A11y: Decision(shouldLock, appName, usedMinutes, limitMinutes)
         end
 
         alt shouldLock == true
-            A11y ->> Prefs: save KEY_PENDING_PACKAGE,<br/>KEY_PENDING_APP_NAME
-            A11y ->> Overlay: show TYPE_ACCESSIBILITY_OVERLAY<br/>(or launch AppLockActivity on failure)
-            Overlay ->> User: "Đã đạt giới hạn" + 3 buttons
+            A11y ->> Prefs: save KEY_PENDING_PACKAGE KEY_PENDING_APP_NAME
+            A11y ->> Overlay: show TYPE_ACCESSIBILITY_OVERLAY (or launch AppLockActivity on failure)
+            Overlay ->> User: Da dat gioi han + 3 buttons
 
-            User ->> Overlay: tap "Mở Touch Grass để làm nhiệm vụ"
-            Overlay ->> RN: launch MainActivity<br/>(FLAG_ACTIVITY_NEW_TASK | CLEAR_TOP)
+            User ->> Overlay: tap Mo Touch Grass de lam nhiem vu
+            Overlay ->> RN: launch MainActivity (FLAG_ACTIVITY_NEW_TASK CLEAR_TOP)
 
             rect rgb(238, 245, 238)
-                Note over User,Mongo: Task completion (RN ↔ Backend, JWT)
-                RN ->> TaskFlow: navigate TaskHub → TaskDetail
-                TaskFlow ->> TaskFlow: verification session<br/>(gps/photo/screen-timer/manual)
+                Note over User,Mongo: Task completion (RN and Backend, JWT)
+                RN ->> TaskFlow: navigate TaskHub to TaskDetail
+                TaskFlow ->> TaskFlow: verification session (gps/photo/screen-timer/manual)
                 TaskFlow ->> TaskFlow: POST /user-tasks/:id/complete
-                TaskFlow ->> Reward: POST /user-tasks/:id/claim-reward<br/>(rewardXp, rewardLp, unlockMinutes)
+                TaskFlow ->> Reward: POST /user-tasks/:id/claim-reward (rewardXp rewardLp unlockMinutes)
             end
 
             rect rgb(250, 245, 240)
                 Note over User,Mongo: Unlock purchase
-                Reward ->> Reward: getPendingLockedApp()<br/>(from native prefs via bridge)
-                Reward ->> Ctrl: POST /app-control/unlock<br/>Header Idempotency-Key: reward-{userTaskId}-{pkg}<br/>Body {packageName, optionId}
+                Reward ->> Reward: getPendingLockedApp() (from native prefs via bridge)
+                Reward ->> Ctrl: POST /app-control/unlock Header Idempotency-Key: reward-userTaskId-pkg Body packageName optionId
                 Ctrl ->> Svc: createUnlock(userId, dto, operationKey)
 
-                Svc ->> Svc: validate Idempotency-Key<br/>assertNotProtected(packageName)<br/>assertNotAllowlisted(userId, packageName)
-                Svc ->> Mongo: findOne rule {user, packageName, enabled:true}
+                Svc ->> Svc: validate Idempotency-Key assertNotProtected(packageName) assertNotAllowlisted(userId, packageName)
+                Svc ->> Mongo: findOne rule user packageName enabled:true
                 alt no enabled rule
                     Mongo -->> Svc: null
                     Svc -->> Ctrl: 404 NotFoundException
                     Ctrl -->> Reward: 404
                 else rule found
                     Mongo -->> Svc: rule
-                    Svc ->> Mongo: findOne unlock session<br/>by operationKey (idempotency check)
+                    Svc ->> Mongo: findOne unlock session by operationKey (idempotency check)
                     alt session already exists (retry)
                         Mongo -->> Svc: existing session
                         Svc ->> Svc: assertSameUnlock(session, pkg, optionId)
-                        Svc ->> Svc: ensureDebited() — already debited, skip charge
+                        Svc ->> Svc: ensureDebited() - already debited, skip charge
                     else new unlock
-                        Svc ->> Mongo: findOne active session for package<br/>(status=ACTIVE, expiresAt>now, debited=true)
+                        Svc ->> Mongo: findOne active session for package (status=ACTIVE expiresAt>now debited=true)
                         Mongo -->> Svc: currentActiveSession or null
-                        Svc ->> Svc: extensionBase = currentActiveSession.expiresAt ?? now
-                        Svc ->> Mongo: create TemporaryUnlockSession<br/>{expiresAt = extensionBase + option.minutes,<br/>optionId, leafPointsSpent, debited:false}
-                        Svc ->> Svc: ensureDebited()<br/>→ usersService.spendLeafPoints(userId, cost, operationKey)
+                        Svc ->> Svc: extensionBase = currentActiveSession.expiresAt or now
+                        Svc ->> Mongo: create TemporaryUnlockSession expiresAt = extensionBase + option.minutes optionId leafPointsSpent debited:false
+                        Svc ->> Svc: ensureDebited() then usersService.spendLeafPoints(userId, cost, operationKey)
                         alt insufficient Leaf Points
                             Svc ->> Mongo: deleteOne session (debited:false)
-                            Svc -->> Ctrl: 400 BadRequestException "Insufficient Leaf Points"
+                            Svc -->> Ctrl: 400 BadRequestException Insufficient Leaf Points
                             Ctrl -->> Reward: 400
                         else LP spent OK
-                            Svc ->> Mongo: session.debited = true; save()
+                            Svc ->> Mongo: session.debited = true save()
                         end
                     end
-                    Svc -->> Ctrl: {expiresAt, remainingLeafPoints,<br/>minutes, alreadyProcessed}
+                    Svc -->> Ctrl: expiresAt remainingLeafPoints minutes alreadyProcessed
                     Ctrl -->> Reward: 201 UnlockResponseDto
                 end
             end
 
             rect rgb(240, 240, 250)
                 Note over User,Mongo: Persist unlock natively
-                Reward ->> RN: native call<br/>AppControl.setTemporaryUnlockUntil(packageName, expiresAt)
+                Reward ->> RN: native call AppControl.setTemporaryUnlockUntil(packageName, expiresAt)
                 RN ->> Policy: setTemporaryUnlockUntil(context, pkg, expiresAtMs)
-                Policy ->> Prefs: write unlock_until_&lt;pkg&gt; = expiresAtMs<br/>remove KEY_PENDING_PACKAGE / KEY_PENDING_APP_NAME
+                Policy ->> Prefs: write unlock_until_pkg = expiresAtMs remove KEY_PENDING_PACKAGE KEY_PENDING_APP_NAME
                 Reward ->> RN: navigate back to Home
             end
 
             rect rgb(245, 245, 240)
                 Note over User,Mongo: Next detection cycle
                 A11y ->> Policy: evaluate(context, packageName)
-                Policy ->> Prefs: unlock_until_&lt;pkg&gt; > now?
+                Policy ->> Prefs: unlock_until_pkg > now?
                 Policy -->> A11y: Decision(shouldLock = false)
                 A11y ->> Overlay: hideLockOverlay()
             end

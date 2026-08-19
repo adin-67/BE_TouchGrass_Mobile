@@ -1,98 +1,205 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Touch Grass Mobile — Backend API
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Backend for the **CSE430 course project "Touch Grass"**: an Android app that blocks social-media
+apps until the user completes real-world tasks (walking, photo verification, screen-off timers)
+and earns XP/Leaf Points that unlock limited app access. This repo serves the NestJS API that the
+React Native frontend talks to.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Tech stack
 
-## Description
+- **NestJS 11** + TypeScript (Node.js ≥ 22.11)
+- **Mongoose 9** / **MongoDB 8** (see `compose.yaml`)
+- **JWT** auth with **argon2** password hashing; Google sign-in (ID-token verification); password-reset email via nodemailer
+- **Swagger** (`@nestjs/swagger`) UI at `/docs`
+- Joi-validated environment, global `ValidationPipe` (strict), global `ThrottlerGuard` (100 req/min)
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+## System architecture
 
-## Project setup
-
-```bash
-$ npm install
+```mermaid
+flowchart LR
+    subgraph Clients
+        App["React Native App<br/>(Android)"]
+        Swagger["Swagger UI<br/>/docs"]
+    end
+    subgraph API["NestJS API :3000"]
+        VP["ValidationPipe (strict)"]
+        TG["ThrottlerGuard<br/>100 req/min"]
+        JG["JwtAuthGuard + RolesGuard"]
+        subgraph Mods["Feature modules"]
+            M1["health"]
+            M2["auth"]
+            M3["users"]
+            M4["tasks / admin/tasks"]
+            M5["user-tasks"]
+            M6["app-control"]
+        end
+    end
+    Mongo[("MongoDB 8 · 9 collections")]
+    App -->|"/api/v1/*"| VP
+    Swagger --> VP
+    VP --> TG --> JG --> Mods
+    M1 & M2 & M3 & M4 & M5 & M6 --> Mongo
 ```
 
-## Compile and run the project
+## Prerequisites
+
+- Node.js ≥ 22.11
+- Docker (to run MongoDB via `compose.yaml`) or an existing MongoDB instance
+- An `.env` file (see below) — the app refuses to boot without the required vars
+
+## Setup
 
 ```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+npm install
+copy .env.example .env    # Windows
+# or: cp .env.example .env  (Linux/macOS)
+docker compose up -d      # start MongoDB 8
+npm run seed:tasks        # populate the task catalog
 ```
 
-## Run tests
+### Environment variables
+
+Required (validated by Joi in `src/app.module.ts`):
+
+| Variable                | Description                                                  |
+| ----------------------- | ------------------------------------------------------------ |
+| `MONGODB_URI`           | MongoDB connection string (`mongodb://` or `mongodb+srv://`) |
+| `JWT_ACCESS_SECRET`     | Secret used to sign access tokens                            |
+| `JWT_ACCESS_EXPIRES_IN` | Access-token lifetime, e.g. `15m`                            |
+
+Optional:
+
+| Variable                                                                                           | Description                                                                                                     |
+| -------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `PORT`                                                                                             | HTTP port (default `3000`)                                                                                      |
+| `PASSWORD_RESET_TTL_MINUTES`                                                                       | Reset-token lifetime, 10–15 (default `15`)                                                                      |
+| `PASSWORD_RESET_URL`                                                                               | App deep link used in reset emails (default `touchgrass://reset-password`); required only if `MAIL_HOST` is set |
+| `MAIL_HOST` / `MAIL_PORT` / `MAIL_SECURE` / `MAIL_USER` / `MAIL_PASSWORD` / `MAIL_FROM`            | SMTP settings for reset emails (Mailtrap/Ethereal/other); reset email is silently skipped when unset            |
+| `GOOGLE_ANDROID_CLIENT_ID` / `GOOGLE_WEB_CLIENT_ID`                                                | Google sign-in client IDs; Google login 503s if both are unset                                                  |
+| `APPLE_TEAM_ID` / `APPLE_KEY_ID` / `APPLE_SERVICE_ID` / `APPLE_PRIVATE_KEY` / `APPLE_REDIRECT_URI` | Unused placeholders — Apple login is not implemented                                                            |
+
+## Running
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+npm run start        # run dist/main (build first with npm run build)
+npm run start:dev    # watch mode
+npm run start:prod   # run dist/main (production entry)
 ```
 
-## Deployment
+- API base URL: `http://localhost:3000/api/v1` (when `PORT=3000`)
+- Swagger UI: `http://localhost:3000/docs`
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+## Testing
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+Run in this order:
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+npm run lint      # eslint + prettier (runs with --fix; rewrites files)
+npm run build     # nest build — the typecheck
+npm test          # unit tests (*.spec.ts in src/)
+npm run test:cov  # unit tests with coverage report -> coverage/
+npm run test:e2e  # e2e tests against a LIVE MongoDB (docker + .env required)
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+E2E specs boot the real `AppModule` and register/clean up their own users; they re-apply the global
+prefix + `ValidationPipe` from `main.ts` manually, so keep them in lockstep with `main.ts`.
 
-## Resources
+## API overview
 
-Check out a few resources that may come in handy when working with NestJS:
+All routes are under the `/api/v1` prefix and return JSON; only `GET /`, `GET /health` and the
+`/auth/*` endpoints are public, everything else needs a JWT bearer token (admin routes need
+`role: 'admin'`). **46 endpoints across 8 controllers** (audited — see
+`Documentation/ProgressReport/2_backend_endpoints.md`).
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+| Area        | Base path             | Endpoints | Purpose                                                                               |
+| ----------- | --------------------- | --------- | ------------------------------------------------------------------------------------- |
+| App         | `/api/v1/`            | 1         | Root hello                                                                            |
+| Health      | `/api/v1/health`      | 1         | Liveness check                                                                        |
+| Auth        | `/api/v1/auth`        | 5         | Register, login, Google login, forgot/reset password                                  |
+| Users       | `/api/v1/users`       | 2         | Get/update own profile                                                                |
+| Tasks       | `/api/v1/tasks`       | 2         | List active task catalog                                                              |
+| Admin tasks | `/api/v1/admin/tasks` | 5         | Full task CRUD; delete = soft deactivate                                              |
+| User tasks  | `/api/v1/user-tasks`  | 16        | Accept, progress, GPS/screen-timer/manual-checkin/photo sessions, statistics, rewards |
+| App control | `/api/v1/app-control` | 14        | Blocking rules, allowlist, LP unlocks, usage stats                                    |
 
-## Support
+The full per-endpoint catalog (method, auth, request/response, notes) is in the Swagger UI at
+`/docs` and in `Documentation/ProgressReport/2_backend_endpoints.md`.
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+### Module dependencies
 
-## Stay in touch
+Actual imports from the module files (`src/*/*.module.ts`):
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+```mermaid
+flowchart TD
+    AppModule --> ConfigModule
+    AppModule --> ThrottlerModule
+    AppModule --> MongooseModule --> Mongo[("MongoDB")]
+    AppModule --> Health
+    AppModule --> Users
+    AppModule --> Auth
+    AppModule --> Tasks
+    AppModule --> UserTasks
+    AppModule --> AppControl
+    Auth --> Users
+    Auth --> JwtModule[(JWT secret)]
+    UserTasks --> Tasks
+    UserTasks --> Users
+    AppControl --> Users
+    Tasks --> RolesGuard
+```
 
-## License
+## Authentication flows
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant APP as React Native App
+    participant API as NestJS API
+    participant DB as MongoDB
+    participant GOOG as Google
+
+    U->>APP: email + password
+    APP->>API: POST /auth/login
+    API->>DB: verify argon2 hash
+    API-->>APP: { accessToken, user }
+    APP->>API: GET /users/me (Bearer JWT)
+
+    U->>APP: "Sign in with Google"
+    APP->>GOOG: ID token
+    APP->>API: POST /auth/google { idToken }
+    API->>GOOG: verify signature/audience
+    API-->>APP: { accessToken, user }
+
+    U->>APP: Forgot password
+    APP->>API: POST /auth/forgot-password
+    API-->>U: email · touchgrass://reset-password?token=...
+    U->>APP: open deep link
+    APP->>API: POST /auth/reset-password { token, newPassword }
+    API-->>APP: success
+```
+
+## Project structure
+
+```
+src/
+  app.module.ts          # root module: ConfigModule (Joi), ThrottlerModule, MongooseModule
+  main.ts                # bootstrap: /api/v1 prefix, ValidationPipe, Swagger
+  health/                # liveness endpoint
+  auth/                  # JWT + argon2 auth, Google login, reset-password flows
+  users/                 # profile
+  tasks/                 # public task catalog + admin task CRUD (soft delete)
+  user-tasks/            # accepted tasks, typed verification sessions, rewards
+  app-control/           # rules, allowlist, unlocks, usage summaries
+  seeds/                 # task-seed data + seeder (npm run seed:tasks)
+test/                    # e2e specs (*.e2e-spec.ts)
+```
+
+## Key conventions
+
+- UI-facing messages, API responses and Swagger summaries are **Vietnamese** — keep them that way.
+- Task cycles (daily/weekly) are computed in **Asia/Ho_Chi_Minh** time.
+- Admin task deletion is a **soft deactivate** (`active: false`).
+- `POST /app-control/unlock` requires an **`Idempotency-Key`** header; client-supplied price fields
+  are rejected; protected packages (social media) return **403**.
+- `MONGO_ROOT_USERNAME` / `MONGO_ROOT_PASSWORD` / `MONGO_DATABASE` in `.env` feed `compose.yaml`.
